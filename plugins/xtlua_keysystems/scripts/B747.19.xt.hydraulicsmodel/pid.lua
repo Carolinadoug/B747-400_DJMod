@@ -12,9 +12,9 @@ local function clamp(x, min, max)
     return x
   end
 end
-function sleep(n)
-  os.execute("sleep " .. tonumber(n))
-end
+-- Removed: a global sleep() that shelled out via os.execute. It was dead test
+-- scaffolding, but it left an arbitrary-shell-command primitive reachable from
+-- every script sharing this Lua state.
 --local seconds = os.clock
 
 -- all values of the PID controller

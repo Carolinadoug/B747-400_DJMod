@@ -82,7 +82,9 @@ acarsSystem.remote={
         local msg=newMessage["msg"]
         local requiresResponse=newMessage["RR"]
         local packet="/data2/"..mID.."/"..replyTo .."/"..requiresResponse .."/"..msg
-        print("Sending hoppie packet "..packet .. " logon "..hoppielogon)
+        -- Do NOT log hoppielogon. It is a live third-party credential and
+        -- Log.txt is the file users routinely upload when asking for support.
+        print("Sending hoppie packet "..packet)
         netRequestDataref="{'url':'https://www.hoppie.nl/acars/system/connect.html?from="..from..
         "&type=cpdlc"..
         "&to="..to..

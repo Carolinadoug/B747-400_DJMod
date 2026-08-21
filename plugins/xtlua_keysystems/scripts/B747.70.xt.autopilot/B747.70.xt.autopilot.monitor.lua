@@ -679,6 +679,14 @@ function getWCAforHeading(theading)
     local heading=math.fmod(theading,360)
    -- print("1..")
     if heading<0 then heading=heading+360 end
+    -- At very low TAS (on the ground, during load, after a reposition) the
+    -- wind/tas ratio below exceeds 1 and math.asin() returns NaN, which was
+    -- then written straight into sim/cockpit/autopilot/heading_mag. Once the
+    -- heading bug is NaN the autopilot has nothing sane to fly. Guard the
+    -- divisor here and clamp the ratio before asin().
+    if tas < 40 then
+        return heading
+    end
     local wca=0
    -- print("2..")
     if B747DR_ND_Wind_Bearing<-90 then
@@ -703,8 +711,14 @@ function getWCAforHeading(theading)
         --local latWind=-math.sin(angle)*simDR_wind_speed
       end
      --print("3..")
+      -- asin() is only defined on [-1,1]; anything outside gives NaN.
+      if wca > 1 then wca = 1 elseif wca < -1 then wca = -1 end
       wca = math.asin(wca)
       wca=math.deg(wca)
+      -- Final belt-and-braces NaN check (x ~= x is only true for NaN).
+      if wca ~= wca then
+          return heading
+      end
       --print("4..")
       local hV=heading +wca
       hV=math.fmod(hV,360)

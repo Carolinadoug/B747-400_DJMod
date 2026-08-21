@@ -177,12 +177,26 @@ receive=function()
     local newMessage=json.decode(acarsReceiveDataref)
     if newMessage["fp"] ~= nil then
       print("flight plan=" .. newMessage["fp"])
-      file = io.open("Output/FMS plans/".. getFMSData("fltno") ..".fms", "w")
-      io.output(file)
-      io.write("I\n1100 Version\nCYCLE "..getCycle())
-      io.write(newMessage["fp"])
-      io.close(file)
-      
+      -- fltno is free text typed on the CDU and was interpolated straight into
+      -- this path, so "../.." escaped the FMS plans directory. Restrict it to
+      -- characters that are legal in a flight number and bail out if nothing
+      -- usable is left. The handle is also checked now - io.open can fail, and
+      -- io.output(nil) silently redirected these writes to stdout.
+      local fltno = string.upper(tostring(getFMSData("fltno") or ""))
+      fltno = string.gsub(fltno, "[^A-Z0-9_%-]", "")
+      if string.len(fltno) == 0 then
+        print("ACARS: refusing to write flight plan, no valid flight number")
+      else
+        local fpFile = io.open("Output/FMS plans/".. fltno ..".fms", "w")
+        if fpFile == nil then
+          print("ACARS: could not open Output/FMS plans/".. fltno ..".fms for writing")
+        else
+          fpFile:write("I\n1100 Version\nCYCLE "..getCycle())
+          fpFile:write(newMessage["fp"])
+          fpFile:close()
+        end
+      end
+
       newMessage["fp"]= nil
     end
     if newMessage["RR"] ~= nil then

@@ -3,11 +3,8 @@
 *        COPYRIGHT � 2020 Mark Parker/mSparks CC-BY-NC4
 *****************************************************************************************
 ]]
-local clock = os.clock
-function sleep(n)
-  local t0 = clock()
-  while clock() - t0 <= n do end
-end
+-- Removed: a global sleep() that busy-waited on os.clock. It had no live
+-- callers, and calling it would have frozen the sim for the whole duration.
 netRequestDataref=find_dataref("autoatc/networking/url")
 netdataDataref=find_dataref("autoatc/networking/data")
 netstatusDataref=find_dataref("autoatc/networking/urlstatus")
