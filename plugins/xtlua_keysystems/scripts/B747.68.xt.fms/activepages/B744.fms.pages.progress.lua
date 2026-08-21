@@ -172,13 +172,18 @@ fmsPages["PROGRESS"].getPage=function(self,pgNo,fmsID)
       latWind=string.format("%3d",math.sin(angle)*simDR_wind_speed)
       longWind=string.format("%3d",math.cos(angle)*simDR_wind_speed)
     end
-    xtk_error=string.format("%2.1f",B747DR_ap_lnav_xtk_error)
+    -- Cross-track error is now signed (negative = left of course). The side
+    -- letter used to be hardcoded "L" in the line below, so deviation always
+    -- displayed as Left regardless of which way the aircraft had drifted.
+    local xtkSide="R"
+    if B747DR_ap_lnav_xtk_error<0 then xtkSide="L" end
+    xtk_error=string.format("%2.1f",math.abs(B747DR_ap_lnav_xtk_error))
     lastPage[fmsID]= {
     "        PROGRESS        ",
     "                        ",
     longWind.."KT "..string.format("%10s",B747DR_ND_Wind_Line.."KT").."  "..windSide..latWind .."KT",
     "                        ",
-    "L "..xtk_error.."              +**FT",
+    xtkSide.." "..xtk_error.."              +**FT",
     "                        ",
     string.format("%03.0f",B747DR_TAS_pilot).."                ".. string.format("%3d",simDR_air_temp) .."`C",
     "                        ",

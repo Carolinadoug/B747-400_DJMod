@@ -2202,8 +2202,112 @@ function B747_getCurrentWayPoint(fmsO)
 	end
 end
 
+--[[
+	LNAV ACTIVE-LEG TRACKING
+	------------------------
+	Two problems this code had:
+
+	1. The active leg was a bare integer index into a table that the stock FMS
+	   rebuilds on every route edit. Nothing re-anchored it, so inserting or
+	   deleting a waypoint silently made the active leg point at a different
+	   waypoint - the reported "it loses its location".
+
+	2. DIRECT TO was written to B747DR_ap_lnavHeading_mode by the FMS and then
+	   overwritten by this function within a frame (twice), and the clamp that
+	   was supposed to protect it assigned to a local that was never read
+	   again. So DIRECT TO never actually moved the active leg.
+
+	The two helpers below address (1); isDirectToActive() addresses (2).
+--]]
+
+-- Name of the waypoint the active leg currently points at, so a plan edit can
+-- be detected and the index re-anchored to the same waypoint.
+local anchoredWaypointName = nil
+local anchoredIndex = 0
+-- Set when the waypoint we were tracking vanishes from the route (a stock-FMS
+-- DIRECT TO deletes the intervening waypoints and renumbers everything, so the
+-- active index can end up beyond the new best leg). Permits ONE non-forward
+-- move so the search can re-acquire, then clears.
+local lnavAllowReacquire = false
+
+function lnavWaypointName(fmsO, idx)
+	if idx == nil or idx < 1 then return nil end
+	local wp = fmsO[idx]
+	if wp == nil then return nil end
+	return wp[8]
+end
+
+-- Sign the cross-track error: negative = LEFT of course, positive = RIGHT.
+-- getTriSpaceSolver() returns a magnitude only, so nothing downstream could
+-- tell which side of the leg the aircraft was on - which is why the PROGRESS
+-- page simply hardcoded an "L" prefix and always read Left.
+function lnavSignedXtk(fmsO, idx, magnitude)
+	if idx == nil or idx < 2 then return magnitude end
+	local a = fmsO[idx-1]
+	local b = fmsO[idx]
+	if a == nil or b == nil then return magnitude end
+	local legBearing = getHeading(a[5], a[6], b[5], b[6])
+	local toAircraft = getHeading(a[5], a[6], simDR_latitude, simDR_longitude)
+	if getHeadingDifference(legBearing, toAircraft) < 0 then
+		return -magnitude
+	end
+	return magnitude
+end
+
+-- A DIRECT TO is in progress when the FMS has published a target leg AND
+-- flagged it with the -100 cross-track sentinel. The monitor clears that
+-- sentinel back to 0 once inside 10nm, which releases the lock and lets normal
+-- sequencing resume from the direct-to waypoint.
+function isDirectToActive()
+	return B747DR_ap_lnavHeading_mode > 0 and B747DR_ap_lnav_xtk_target <= -99
+end
+
+-- If the plan changed under us, move the index so it still points at the same
+-- named waypoint. Returns true if the caller should skip its search this pass.
+function lnavReanchor(fmsO)
+	local n = table.getn(fmsO)
+	local currentName = lnavWaypointName(fmsO, B747DR_fmscurrentIndex)
+
+	if anchoredWaypointName == nil or anchoredIndex ~= B747DR_fmscurrentIndex then
+		-- first run, or the index moved for a legitimate reason: (re)anchor
+		anchoredWaypointName = currentName
+		anchoredIndex = B747DR_fmscurrentIndex
+		return false
+	end
+
+	if currentName == anchoredWaypointName then
+		return false -- plan unchanged at this index
+	end
+
+	-- The waypoint under our index changed identity: the route was edited.
+	-- Look for the waypoint we were tracking and follow it to its new index.
+	for i = 1, n, 1 do
+		if fmsO[i][8] == anchoredWaypointName then
+			if i ~= B747DR_fmscurrentIndex then
+				print("LNAV: route edited, re-anchored "..tostring(anchoredWaypointName)..
+				      " from leg "..B747DR_fmscurrentIndex.." to "..i)
+				B747DR_fmscurrentIndex = i
+				B747DR_fms_setCurrent = i
+				setVNAVState("recalcAfter", i)
+			end
+			anchoredIndex = B747DR_fmscurrentIndex
+			return true
+		end
+	end
+
+	-- The waypoint we were tracking is gone from the plan entirely - typically
+	-- a DIRECT TO on the stock CDU, which deletes the intervening waypoints and
+	-- renumbers the rest. Drop the anchor and allow one non-forward move so the
+	-- search can re-acquire against the renumbered plan.
+	print("LNAV: active waypoint "..tostring(anchoredWaypointName).." no longer in route, re-acquiring")
+	anchoredWaypointName = nil
+	anchoredIndex = 0
+	lnavAllowReacquire = true
+	return false
+end
+
 function B747_getCurrentWayPoint_function(fmsO)
-	
+
 	if simDR_radarAlt1<1000 and simDR_vvi_fpm_pilot < 500.0 then return end --surpress during final/on ground
 	if (B747DR_fmscurrentIndex>1 and fmsO[B747DR_fmscurrentIndex-1][8]=="PPOS") then
 		simDR_override_fms_progress=0
@@ -2212,6 +2316,35 @@ function B747_getCurrentWayPoint_function(fmsO)
 		return
 	end
 	simDR_override_fms_progress=1
+
+	-- DIRECT TO takes priority over everything below. Force the active leg to
+	-- the requested waypoint and do not run the nearest-leg search at all,
+	-- which is what used to erase it.
+	if isDirectToActive() then
+		local target = B747DR_ap_lnavHeading_mode
+		if fmsO[target] ~= nil then
+			if B747DR_fmscurrentIndex ~= target then
+				print("LNAV: DIRECT TO leg "..target.." ("..tostring(fmsO[target][8])..")")
+				B747DR_fmscurrentIndex = target
+				B747DR_fms_setCurrent = target
+				anchoredWaypointName = fmsO[target][8]
+				anchoredIndex = target
+				setVNAVState("recalcAfter", target)
+			end
+			-- On a direct-to there is no defined track to be offset from.
+			B747DR_ap_lnav_xtk_error = 0
+			return
+		else
+			-- target index no longer valid (route edited under the direct-to)
+			print("LNAV: DIRECT TO target leg "..target.." is gone, cancelling")
+			B747DR_ap_lnavHeading_mode = 0
+			B747DR_ap_lnav_xtk_target = 0
+		end
+	end
+
+	if lnavReanchor(fmsO) then
+		return -- index was just moved to follow a route edit; settle first
+	end
 	local best=0
 	local bestOffTrack=100 --can offset 99 miles
 	local bestheadingDiff=180
@@ -2238,6 +2371,13 @@ function B747_getCurrentWayPoint_function(fmsO)
 		if track[1]<math.max(trackLength-5,trackLength*2/3) then
 			canNew=false
 			--print("In current track "..B747DR_fmscurrentIndex.." "..minPhaseLeg.."->"..maxPhaseLeg)
+		end
+		-- After a route edit dropped the waypoint we were tracking, the
+		-- "still inside the current leg" test above is meaningless: the
+		-- current index now points at some unrelated waypoint. Force the
+		-- search to run so re-acquisition can actually happen.
+		if lnavAllowReacquire then
+			canNew=true
 		end
 		local maxError=5
 		if dToAP<40 then
@@ -2311,28 +2451,44 @@ function B747_getCurrentWayPoint_function(fmsO)
 		end
 		--if best==1 then best=2 end
 		
-		B747DR_ap_lnav_xtk_error=bestOffTrack
+		if best>0 and bestOffTrack<100 then
+			B747DR_ap_lnav_xtk_error=lnavSignedXtk(fmsO,B747DR_fmscurrentIndex,bestOffTrack)
+		end
 		--print("best Track to waypoint="..best.." / "..bestOffTrack)
-		if best>0 and (best>B747DR_fmscurrentIndex or best<B747DR_fmscurrentIndex-1) and B747DR_fmscurrentIndex ~=best then
+		-- Sequence FORWARD only. The old condition also fired when
+		-- best < fmscurrentIndex-1, so the nearest-leg search could throw the
+		-- active leg backwards to any geometrically closer leg elsewhere in the
+		-- plan - on a procedure turn, a hold, or parallel STAR segments that
+		-- reads as the FMS jumping to the wrong place. A real FMC only moves
+		-- backwards on an explicit crew action (DIRECT TO), which is handled
+		-- above and never reaches this code.
+		if best>B747DR_fmscurrentIndex or (lnavAllowReacquire and best>0 and best~=B747DR_fmscurrentIndex) then
+			if lnavAllowReacquire and best<=B747DR_fmscurrentIndex then
+				print("LNAV: re-acquired after route edit, leg "..B747DR_fmscurrentIndex.." -> "..best)
+			end
+			lnavAllowReacquire = false
 			B747DR_fms_setCurrent = best
 			B747DR_fmscurrentIndex = best
-			if B747DR_ap_lnav_state == 2 then
-				B747DR_ap_lnavHeading_mode = best
-			end
-			
-			print("B747DR_fmscurrentIndex="..best)
+			anchoredWaypointName = lnavWaypointName(fmsO, best)
+			anchoredIndex = best
+			print("LNAV: sequenced to leg "..best.." ("..tostring(anchoredWaypointName)..")")
 			setVNAVState("recalcAfter", best)
 		elseif B747DR_fmscurrentIndex == 0 and maxPhaseLeg>2 and fmsO[2][2]~=2048 then
 			B747DR_fmscurrentIndex = 2
 			B747DR_fms_setCurrent = 2
 			B747DR_ap_lnav_xtk_target=0 --target no track offset
-			--print("B747DR_fmscurrentIndex="..1)
+			anchoredWaypointName = lnavWaypointName(fmsO, 2)
+			anchoredIndex = 2
 			setVNAVState("recalcAfter", 1)
 		end
 	end
-	if B747DR_ap_lnavHeading_mode>0 and best<B747DR_ap_lnavHeading_mode then
-		best=B747DR_ap_lnavHeading_mode
-	elseif B747DR_ap_lnavHeading_mode ~=B747DR_fmscurrentIndex and B747DR_fmscurrentIndex>1 and B747DR_ap_lnav_state == 2 then
+	-- Keep lnavHeading_mode mirroring the active leg for display purposes, but
+	-- ONLY when no DIRECT TO is in progress. Previously this ran unconditionally
+	-- (here and inside the block above) and was what erased the DIRECT TO target
+	-- within a frame of the FMS setting it. The old clamp that was meant to
+	-- prevent that assigned to the local "best", which is never read again -
+	-- a dead store.
+	if not isDirectToActive() and B747DR_ap_lnav_state == 2 and B747DR_fmscurrentIndex > 1 then
 		B747DR_ap_lnavHeading_mode = B747DR_fmscurrentIndex
 	end
 end
@@ -2350,7 +2506,7 @@ function B747_getCurrentWayPoint_default(fmsO)
 				local dToNext=getDistance(simDR_latitude,simDR_longitude,fmsO[i][5],fmsO[i][6])
 				local trackLength=getDistance(fmsO[i-1][5],fmsO[i-1][6],fmsO[i][5],fmsO[i][6])
 				local track=getTriSpaceSolver(trackLength,dFromLast,dToNext)
-				B747DR_ap_lnav_xtk_error=track[2]
+				B747DR_ap_lnav_xtk_error=lnavSignedXtk(fmsO,i,track[2])
 				--print("Track Data "..track[1].." "..track[2].." "..dFromLast.." "..dToNext.." "..trackLength)
 			end
 			setVNAVState("recalcAfter", i)

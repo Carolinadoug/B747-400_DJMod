@@ -391,7 +391,15 @@ function findILS(value)
 	    print("68 - Tuning ILSs ".. ilsData)
 	    if direction ~=nil then
 		  bestDist=getHeadingDifferenceM(direction,navAids[n][4])
-		  --course=direction
+		  -- Honour the course the crew actually typed. This assignment was
+		  -- commented out, so an entered FREQ/CRS selected WHICH ils to tune
+		  -- but the course itself was discarded and replaced with the
+		  -- database value - the reported "selecting a new course does
+		  -- nothing". On the real aircraft the entered course is used.
+		  -- Safe from being overwritten: findILS sets radio mode "M", and
+		  -- B747_fltmgmt_setILS returns early in manual mode instead of
+		  -- re-tuning frequency and course every 2 seconds.
+		  course=direction
 		end
 		if course<0 then
 			course=course+360
