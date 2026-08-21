@@ -377,18 +377,11 @@ for i=1,10,1 do
 end
 
 
-local director_pitchRecord={}
-local director_currentPitchRecord=1
+-- The 10-sample pitch/roll boxcar buffers that used to live here were removed
+-- along with the moving-average filters (see FLIGHT DIRECTOR COMMAND SMOOTHING
+-- below). Only the pitch sample timestamp is still needed, to gate calls into
+-- the incremental ap_director_pitch().
 local director_lastPitchRecordUpdate=0
-for i=1,10,1 do
-    director_pitchRecord[i]=0
-end
-local director_rollRecord={}
-local director_currentrollRecord=1
-local director_lastrollRecordUpdate=0
-for i=1,10,1 do
-    director_rollRecord[i]=0
-end
 
 local director_yawRecord={}
 local director_currentyawRecord=1
@@ -409,16 +402,27 @@ function ap_director_roll()
    if simDR_autopilot_nav_status ==2 and hasLoc==false then
         capturedLocTime=simDRTime
         hasLoc=true
-        print("autoland capturedLocTime")
+        if debug_flight_directors==1 then print("localiser captured at "..simDRTime) end
     elseif simDR_autopilot_nav_status ~=2 then
         hasLoc=false
     end
     if math.abs(B747DR_ap_ATT)>=5 then
         return B747DR_ap_ATT
-    elseif (simDR_autopilot_nav_status ~=2 and B747DR_autopilot_nav_status==2) or 5>(simDRTime-capturedLocTime) then
-        print("autoland estimating roll capturedLocTime "..capturedLocTime.. " simDRTime "..simDRTime .. " simDR_autopilot_nav_status "..simDR_autopilot_nav_status)
+    elseif simDR_autopilot_nav_status ~=2 and B747DR_autopilot_nav_status==2 then
+        -- Beam momentarily lost while LOC is still the armed/active mode: hold
+        -- the last good roll command rather than snapping wings-level.
+        if debug_flight_directors==1 then
+            print("holding last roll command, LOC signal dropped out")
+        end
         return lastAPTargetRoll
     else
+        -- Previously this branch was also taken for the first 5 SECONDS after
+        -- localiser capture ("or 5>(simDRTime-capturedLocTime)"), which froze
+        -- the roll command open-loop through the entire capture turn - and
+        -- those frozen samples then sat in the smoothing filter for several
+        -- seconds more. That is what made the aircraft overshoot and start
+        -- hunting the moment it captured. The freeze is gone; capture is now
+        -- flown closed-loop.
         lastAPTargetRoll=B747DR_ap_target_roll
         return B747DR_ap_target_roll
    end
@@ -801,36 +805,44 @@ function ap_director_pitch(pitchMode)
     last_simDR_AHARS_pitch_heading_deg_pilot=retval
     return ap_director_pitch_retVal(pitchMode,retval)
 end
+--[[
+    FLIGHT DIRECTOR COMMAND SMOOTHING
+    ---------------------------------
+    These used to be 10-sample boxcar (moving average) filters. Because the
+    sample interval was itself variable (0.2-2.0s), the averaging window was
+    2-10 SECONDS long, which put 1-5 seconds of pure phase lag between a beam
+    deviation and the control response. On a localiser/glideslope that lag is
+    what made the aircraft hunt: it would settle, the window would stretch
+    (roll sampled at a full 1.0s per sample once wings-level), drift would
+    build unseen, and then it would over-correct.
+
+    Replaced with a first-order lag filter evaluated EVERY frame. Group delay
+    is now ~tau instead of ~half the boxcar window.
+
+    Tuning note: raise FD_*_TAU if the response looks twitchy, lower it if the
+    aircraft still feels slow to answer the beam. These are the two knobs to
+    try first if the approach needs further adjustment.
+--]]
+local FD_PITCH_TAU = 0.5   -- seconds
+local FD_ROLL_TAU  = 0.6   -- seconds
+
+local function fd_lag_filter(current, target, tau)
+    if tau <= 0 then return target end
+    local alpha = SIM_PERIOD / tau
+    if alpha > 1 then alpha = 1 end
+    if alpha < 0 then alpha = 0 end
+    return current + (target - current) * alpha
+end
+
 local current_roll_intregal=0
 function ap_director_roll_integral()
-    --return B747DR_ap_target_roll
-    local displayUpdate=false
-    --[[if math.abs(simDR_AHARS_roll_heading_deg_pilot)>5 then
-        directorRollSampleRate=0.1
-    else
-        directorRollSampleRate=1
-    end]]
-    directorRollSampleRate=B747_rescale(0,1,10,0.3,math.abs(simDR_AHARS_roll_heading_deg_pilot))
-    
-    if (simDRTime-director_lastrollRecordUpdate)>directorRollSampleRate then
-        displayUpdate=true
-        director_lastrollRecordUpdate=simDRTime
-        director_rollRecord[director_currentrollRecord]=ap_director_roll()
-        director_currentrollRecord=director_currentrollRecord+1
-        --print("currentPitchRecord "..director_currentPitchRecord)
-        if director_currentrollRecord>10 then
-            director_currentrollRecord=1
-        end
-        current_roll_intregal=0
-        for i=1,10,1 do
-            current_roll_intregal=current_roll_intregal+director_rollRecord[i]
-           --if displayUpdate then print("i "..i.." = " ..pitchRecord[i].. " " ..retval) end
-        end
-    end
-    local retval=current_roll_intregal/10
-    B747DR_flight_director_roll=retval
-   -- if displayUpdate then print("retval "..retval.." "..simDRTime) end
-    return retval
+    -- ap_director_roll() is stateless (it just reads the FD roll target), so
+    -- it is safe and more accurate to evaluate it every frame. Sampling it at
+    -- up to 1.0s intervals also meant localiser capture was detected up to a
+    -- second late.
+    current_roll_intregal = fd_lag_filter(current_roll_intregal, ap_director_roll(), FD_ROLL_TAU)
+    B747DR_flight_director_roll=current_roll_intregal
+    return current_roll_intregal
 end
 
 function dampSlip()
@@ -898,28 +910,22 @@ function ap_director_yaw_integral()
     return current_yaw_intregal
 end
 local current_pitch_intregal=0
+local fd_pitch_command=0
 function ap_director_pitch_integral()
-    local displayUpdate=false
+    -- ap_director_pitch() is an INCREMENTAL controller: it nudges its internal
+    -- pitch state by +/-rog on each call, and rog is tuned for being called
+    -- once per directorSampleRate. So the sampling gate has to stay - calling
+    -- it every frame would multiply its integration rate by 12-120x.
+    -- What changes here is only the smoothing: the 10-sample boxcar has been
+    -- replaced with a per-frame first-order lag on the sampled command.
     if (simDRTime-director_lastPitchRecordUpdate)>directorSampleRate then
-        displayUpdate=true
         director_lastPitchRecordUpdate=simDRTime
-        director_pitchRecord[director_currentPitchRecord]=ap_director_pitch(B747DR_ap_FMA_active_pitch_mode)
-        director_currentPitchRecord=director_currentPitchRecord+1
-        --print("currentPitchRecord "..director_currentPitchRecord)
-        if director_currentPitchRecord>10 then
-            director_currentPitchRecord=1
-        end
-        current_pitch_intregal=0
-        for i=1,10,1 do
-            current_pitch_intregal=current_pitch_intregal+director_pitchRecord[i]
-        -- if displayUpdate then print("i "..i.." = " ..pitchRecord[i].. " " ..current_pitch_intregal) end
-        end
+        fd_pitch_command=ap_director_pitch(B747DR_ap_FMA_active_pitch_mode)
     end
-    
-    local retval=current_pitch_intregal/10
-    B747DR_flight_director_pitch=retval
-    --if displayUpdate then print("retval "..retval.." "..simDRTime) end
-    return retval
+
+    current_pitch_intregal = fd_lag_filter(current_pitch_intregal, fd_pitch_command, FD_PITCH_TAU)
+    B747DR_flight_director_pitch=current_pitch_intregal
+    return current_pitch_intregal
 end
 
 local trimrate=25
