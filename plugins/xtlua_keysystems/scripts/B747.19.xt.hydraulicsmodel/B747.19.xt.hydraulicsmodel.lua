@@ -540,8 +540,17 @@ function flight_start()
 
   B747DR_pidPitchPL = 0.07 --low 0.15 high 0.05
   B747DR_pidPitchPH = 0.04 --low 0.15 high 0.05
-  B747DR_pidPitchI = 0.07 --0.07
-  B747DR_pidPitchD = 0.0002
+  B747DR_pidPitchI = 0.007 --now P*0.1, set in ap_pitch_assist each frame
+  -- Pitch D was 0.0002, which with error in degrees contributes essentially
+  -- nothing - the pitch loop had no damping at all. It was kept that small
+  -- because the D term acted on ERROR, so a real gain would have amplified
+  -- the kick from every flight-director step. Now that pitchPid uses
+  -- derivative-on-measurement (see pid.lua) the D term damps actual pitch
+  -- rate and can carry a meaningful value.
+  -- This is the single most likely knob to need adjustment in testing:
+  -- raise it if the vertical axis still oscillates, lower it if pitch feels
+  -- sluggish or notchy.
+  B747DR_pidPitchD = 0.02
 
 
   B747DR_pidyawP = 1.0

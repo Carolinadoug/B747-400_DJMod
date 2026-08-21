@@ -446,9 +446,15 @@ function ap_director_pitch_retVal(pitchMode,retVal)
     local diff=simDRTime-lastPitchModeChange
     if diff<0.7 then
         if debug_flight_directors==1 then
-            print("last ap_director_pitch_retVal "..lastRetVal .." retVal "..retVal .." pitchMode "..pitchMode)
+            print("holding pitch command through mode change: "..lastRetVal.." (new "..retVal..") mode "..pitchMode)
         end
-        last_simDR_AHARS_pitch_heading_deg_pilot=lastRetVal
+        -- NOTE: this used to also do
+        --     last_simDR_AHARS_pitch_heading_deg_pilot = lastRetVal
+        -- which reached back into ap_director_pitch()'s integrator and reset it
+        -- to the frozen value on every frame of the hold. The integrator would
+        -- be dragged backwards for 0.7s each time the pitch mode changed, so
+        -- the command jumped when the hold released. The hold now only affects
+        -- what is RETURNED; the integrator is left to keep running.
         return lastRetVal
     end
     if debug_flight_directors==1 then
@@ -464,26 +470,70 @@ local lastSimDRTime=0
 local last_speed_delta=0
 
 
+--[[
+    GLIDESLOPE BEAM GAIN PROGRAMMING
+    --------------------------------
+    Deviation is reported in DOTS, which is an ANGULAR measure: one dot is a
+    fixed angle, so the linear displacement it represents shrinks in direct
+    proportion to range from the transmitter. Holding a constant fpm-per-dot
+    gain therefore makes effective loop gain climb roughly as 1/range all the
+    way to the threshold - which is exactly why the vertical axis got
+    progressively worse the closer the aircraft got to the runway. Real 747
+    autopilots program beam gain down with radio altitude for this reason.
+
+    Radio altitude is proportional to range along a fixed glidepath, so it is
+    used directly as the schedule.
+
+    Tuning:
+      GS_DOT_GAIN      fpm of correction per dot, at or above GS_GAIN_HI_ALT
+      GS_GAIN_HI/LO    radio-altitude schedule and the gain at each end
+      GS_RATE_GAIN     damping term on how fast deviation is changing.
+                       Set to 0 to disable it and leave pure proportional.
+--]]
+local GS_DOT_GAIN     = 75     -- fpm per dot (unchanged from original, at height)
+local GS_GAIN_HI_ALT  = 1500   -- ft AGL at which full gain applies
+local GS_GAIN_LO_ALT  = 150    -- ft AGL at which the floor gain applies
+local GS_GAIN_FLOOR   = 0.15   -- gain multiplier at/below GS_GAIN_LO_ALT
+local GS_RATE_GAIN    = 250    -- fpm per (dot/second) of deviation rate
+
 function getGlideSlopeFPM()
-    local diff=simDRTime-lastSimDRTime
-    --[[if diff<1 then
-        return thisTargetGlideslipeFPM
-    end]]
+    local dt = simDRTime - lastSimDRTime
+    lastSimDRTime = simDRTime
     local speed_fpm=simDR_groundspeed*196.85
     thisTargetGlideslipeFPM=-math.tan(math.rad(simDR_glideslope1))*speed_fpm
-    local nextVdef=simDR_hsi_vdef_dots_pilot 
-   -- local correction=(8*nextVdef*nextVdef*nextVdef)
-    if math.abs(nextVdef)>2.0 then
-        nextVdef=nextVdef*3
+
+    local vdef = simDR_hsi_vdef_dots_pilot
+    local nextVdef = vdef
+
+    -- Progressive gain when well off the beam. This was a hard 3x step at
+    -- exactly 2.0 dots - a discontinuity the loop can limit-cycle across.
+    -- Now ramps smoothly from 1x at 1 dot to 3x at 2.5 dots.
+    local absVdef = math.abs(nextVdef)
+    if absVdef > 1.0 then
+        nextVdef = nextVdef * B747_rescale(1.0, 1.0, 2.5, 3.0, absVdef)
     end
-    local correction=(75*nextVdef)
-    local resultTargetGlideslipeFPM=thisTargetGlideslipeFPM-correction --was 75 last testing
-    --print("fin thisTargetGlideslipeFPM "..thisTargetGlideslipeFPM.." correction "..correction.." resultTargetGlideslipeFPM "..resultTargetGlideslipeFPM)
+
+    local beamGain = B747_rescale(GS_GAIN_LO_ALT, GS_GAIN_FLOOR, GS_GAIN_HI_ALT, 1.0, simDR_radarAlt1)
+    local correction = GS_DOT_GAIN * nextVdef * beamGain
+
+    -- Damping on deviation rate. Without this the loop is pure proportional
+    -- on an angular measurement and has nothing opposing an overshoot.
+    if GS_RATE_GAIN ~= 0 and dt > 0.001 and dt < 2.0 then
+        local vdefRate = (vdef - last_simDR_hsi_vdef_dots_pilot) / dt
+        -- ignore implausible jumps (beam re-acquisition, receiver switching)
+        if vdefRate > 2.0 then vdefRate = 2.0 elseif vdefRate < -2.0 then vdefRate = -2.0 end
+        correction = correction + GS_RATE_GAIN * vdefRate * beamGain
+    end
+    last_simDR_hsi_vdef_dots_pilot = vdef
+
+    local resultTargetGlideslipeFPM=thisTargetGlideslipeFPM-correction
     if debug_flight_directors==1 then
-        print("fin simDR_glideslope1 "..simDR_glideslope1.."thisTargetGlideslipeFPM "..thisTargetGlideslipeFPM.." correction "..correction.." resultTargetGlideslipeFPM "..resultTargetGlideslipeFPM)
+        print("GS angle "..simDR_glideslope1.." baseFPM "..thisTargetGlideslipeFPM..
+              " dots "..vdef.." beamGain "..beamGain..
+              " correction "..correction.." targetFPM "..resultTargetGlideslipeFPM)
     end
     return resultTargetGlideslipeFPM
-  
+
 end
 
 
@@ -747,14 +797,12 @@ function ap_director_pitch(pitchMode)
             last_simDR_AHARS_pitch_heading_deg_pilot=10
         end
         retval=last_simDR_AHARS_pitch_heading_deg_pilot
-        last_simDR_AHARS_pitch_heading_deg_pilot=ap_director_pitch_retVal(pitchMode,retval)--retval
-        --
-        --if pitchMode==2 then
-        --    ap_director_pitch_retVal(pitchMode,retval)--log it
-        --    return retval
-        --else
-            return last_simDR_AHARS_pitch_heading_deg_pilot--ap_director_pitch_retVal(pitchMode,retval)
-        --end
+        -- This branch used to assign the return of ap_director_pitch_retVal()
+        -- back into last_simDR_AHARS_pitch_heading_deg_pilot, i.e. it fed the
+        -- mode-change hold value back into its own integrator. Every other
+        -- branch of this function leaves the integrator alone; this one alone
+        -- corrupted it. Keep the integrator, return the (possibly held) value.
+        return ap_director_pitch_retVal(pitchMode,retval)
     elseif pitchMode==1 then
        -- print("simDR_autopilot_TOGA_pitch_deg ="..simDR_autopilot_TOGA_pitch_deg)
         if debug_flight_directors==1 then
@@ -968,6 +1016,13 @@ pitchPid.minout=-1
 pitchPid.maxout=1
 pitchPid.target=0
 pitchPid.input = 0
+-- The pitch loop is the one that was hunting. Two changes here:
+--   * D now acts on measured pitch rate instead of on error, so it damps the
+--     response rather than kicking every time the FD target steps.
+--   * the integrator is capped well below full elevator authority, so it can
+--     no longer wind to the stops and take an equally long time to unwind.
+pitchPid.derivativeOnMeasurement = true
+pitchPid.iLimit = 0.35
 pitchPid:compute()
 
 function ap_pitch_assist()
@@ -978,17 +1033,17 @@ function ap_pitch_assist()
     local refresh_trim=simDR_elevator_trim
 
     B747DR_pidPitchP=B747_rescale(3000,B747DR_pidPitchPL,40000,B747DR_pidPitchPH,B747DR_autopilot_altitude_ft_pfd)
-    if B747DR_ap_AFDS_mode_box_status_pilot==1 or B747DR_ap_AFDS_mode_box_status_copilot==1 then
-        B747DR_pidPitchI=B747DR_pidPitchP*0.1
-        --print("pitching for change")
-    else
-        B747DR_pidPitchI=B747DR_pidPitchP
-    end
-    B747DR_pidPitchI=B747DR_pidPitchP--*0.1 --scale this with P
+    -- Integral gain used to be set to the FULL proportional gain by the line
+    -- below the if/else, which unconditionally overrode both branches. With
+    -- error in degrees of pitch that drives the integrator to full elevator
+    -- authority in about 15 seconds of a 1 degree error - far too fast, and
+    -- the dominant cause of the slow vertical oscillation. The author's own
+    -- first branch already had the right idea (P*0.1); it was just dead code.
+    B747DR_pidPitchI=B747DR_pidPitchP*0.1
     pitchPid.kp=B747DR_pidPitchP
     pitchPid.ki=B747DR_pidPitchI
     pitchPid.kd=B747DR_pidPitchD
-    
+
     if simDR_autopilot_servos_on>0 and (B747DR_ap_FMA_active_pitch_mode>0 or B747DR_ap_autoland == 1) then
         simDR_electric_trim=0
         pitchPid.input = simDR_AHARS_pitch_heading_deg_pilot
@@ -996,7 +1051,12 @@ function ap_pitch_assist()
         if doCompute==1 then
             pitchPid:compute()
         end
-        local speed=B747_rescale(1,3,10,10,math.abs(flight_director_pitch-simDR_AHARS_pitch_heading_deg_pilot))
+        -- B747_interpolate_value's "speed" is SECONDS to traverse min->max, so
+        -- a larger number is SLOWER. The old schedule was rescale(1,3,10,10),
+        -- i.e. the elevator got slower the bigger the pitch error - inverted,
+        -- and worst exactly during a mode change or capture. Now it speeds up
+        -- with error, conservatively (3s at 1 degree, 1.5s at 10 degrees).
+        local speed=B747_rescale(1,3,10,1.5,math.abs(flight_director_pitch-simDR_AHARS_pitch_heading_deg_pilot))
         if pitchPid.output==nil then return 0 end
         retval=B747_interpolate_value(B747DR_sim_pitch_ratio,pitchPid.output,-1,1,speed) 
         

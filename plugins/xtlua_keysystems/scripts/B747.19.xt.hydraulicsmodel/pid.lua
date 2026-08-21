@@ -28,6 +28,19 @@ pid = {
     output = nil,
     minout = -math.huge,
     maxout = math.huge,
+    -- derivativeOnMeasurement: when true, the D term acts on the rate of
+    -- change of the MEASUREMENT rather than of the error. Derivative-on-error
+    -- spikes every time the target moves, and these targets are staircases
+    -- coming out of the flight director, so the D term was injecting a kick on
+    -- every step instead of damping anything.
+    -- Left false by default so existing tuning of the roll and yaw loops is
+    -- untouched; enabled explicitly on the pitch loop.
+    derivativeOnMeasurement = false,
+    -- iLimit: optional cap on the integral term, separate from the output
+    -- clamp. Without it the integrator is only limited by full control
+    -- authority, so it can wind all the way to the stops and then take just as
+    -- long to unwind - a slow oscillation the pilot sees as hunting.
+    iLimit = nil,
     _lasttime = nil,
     _lastinput = nil,
     _lasterr= 0,
@@ -72,15 +85,46 @@ end
     end
     local err = self.target - self.input
     local dtime = simDRTime - self._lasttime
-    if dtime == 0 then
+    if dtime <= 0 then
       return
     end
-    self._Iterm = self._Iterm + self.ki * err * dtime
-    self._Iterm = clamp(self._Iterm, self.minout, self.maxout)
-    --local dinput = (self.input - self._lastinput) / dtime
-    local dinput = (err - self._lasterr) / dtime
-    self.output = self.kp * err + self._Iterm + self.kd * dinput
-    self.output = clamp(self.output, self.minout, self.maxout)
+    -- simDRTime is sim/time/total_running_time_sec, which keeps advancing
+    -- while the sim is paused, loading or hitching. An unclamped dtime after
+    -- one of those produces a huge integral jump and a meaningless derivative.
+    if dtime > 0.2 then
+      dtime = 0.2
+    end
+
+    local iTerm = self._Iterm + self.ki * err * dtime
+
+    local dinput
+    if self.derivativeOnMeasurement then
+      -- standard form: D acts on the measurement, and enters negatively
+      dinput = -(self.input - self._lastinput) / dtime
+    else
+      dinput = (err - self._lasterr) / dtime
+    end
+
+    local unclamped = self.kp * err + iTerm + self.kd * dinput
+    self.output = clamp(unclamped, self.minout, self.maxout)
+
+    -- Anti-windup. Only accept the new integral if it is within its own limit
+    -- AND the output is not saturated in the direction the integral is
+    -- pushing. Otherwise hold the previous value, so the integrator does not
+    -- keep charging against the stops and then take just as long to unwind.
+    local iMax = self.iLimit or self.maxout
+    local iMin = self.iLimit and -self.iLimit or self.minout
+    if iTerm > iMax then
+      iTerm = iMax
+    elseif iTerm < iMin then
+      iTerm = iMin
+    end
+    local saturated = (unclamped >= self.maxout and err > 0) or
+                      (unclamped <= self.minout and err < 0)
+    if not saturated then
+      self._Iterm = iTerm
+    end
+
     self._lasttime = simDRTime--seconds()
     self._lastinput = self.input
     self._lasterr = err
