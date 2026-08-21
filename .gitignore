@@ -13,3 +13,6 @@ liveries/British Airways G-CIVX/
 747-400F_vrconfig.txt
 fmod/747-400F.snd
 objects/74F_exterior/
+
+# DJMod build artifacts
+*_update.zip

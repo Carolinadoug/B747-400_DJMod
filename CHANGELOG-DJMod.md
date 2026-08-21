@@ -11,9 +11,99 @@ git diff baseline-sparky
 
 and any individual fix reverted with `git revert <commit>`.
 
+To update an existing install without re-downloading 2.6 GB, see
+[UPDATING.md](UPDATING.md).
+
 ---
 
-## Fixes in this release
+## v1.1.0 — vertical axis and LNAV
+
+Flight test of v1.0.0 reported lateral tracking now stable, but pitch hunting
+both after takeoff with the AP engaged and on approach, getting worse closer to
+the runway.
+
+### Vertical axis
+
+**Pitch integral gain was ~10× too high.** `ap_pitch_assist()` computed
+`pidPitchI = pidPitchP * 0.1` in one branch and `= pidPitchP` in the other, then
+unconditionally overrode *both* with `pidPitchI = pidPitchP` on the next line.
+With error in degrees of pitch, `ki = kp` drives the integrator to full elevator
+authority in ~15 s of a 1° error. This was the dominant cause of the slow
+oscillation in every pitch mode — which is why it appeared after takeoff as well
+as on approach. The author's own first branch already had the right value; it
+was dead code.
+
+**Pitch D term made real, and corrected to derivative-on-measurement.**
+`pidPitchD` was `0.0002` — effectively no damping at all. It had to stay that
+small because the D term acted on *error*, so any meaningful gain amplified the
+kick from every flight-director step instead of damping. `pid.lua` now supports
+`derivativeOnMeasurement` per instance (enabled for pitch only, so the roll and
+yaw tuning that is currently working is untouched), and `pidPitchD` is `0.02`.
+
+**Glideslope beam gain programming.** `getGlideSlopeFPM()` applied a fixed
+75 fpm per dot. Dots are an *angular* measure, so the linear displacement one
+dot represents shrinks with range — effective loop gain climbed as ~1/range all
+the way to the threshold. This is exactly the "worse as you get close to the
+runway" symptom. The correction is now scheduled on radio altitude (full gain
+at/above 1500 ft, 0.15× at/below 150 ft) with an added deviation-rate damping
+term. The hard 3× gain step at exactly 2.0 dots — a discontinuity the loop can
+limit-cycle across — is now a smooth ramp from 1× at 1 dot to 3× at 2.5 dots.
+
+**Integrator corruption on pitch mode change.** `ap_director_pitch_retVal()`
+holds the command for 0.7 s across a mode change, but it also assigned the held
+value back into `ap_director_pitch()`'s integrator, and the VS/GS branch did the
+same again on its way out. The integrator was dragged backwards for 0.7 s on
+every mode change, and the command jumped when the hold released.
+
+**Elevator rate limit was inverted.** `B747_interpolate_value`'s `speed`
+argument is *seconds to traverse the range*, so larger is slower. The schedule
+was `rescale(1, 3, 10, 10, error)` — the elevator got **slower** the larger the
+pitch error, worst exactly during a capture or mode change.
+
+**`pid.lua` hardening.** `dtime` is clamped to 0.2 s (`simDRTime` keeps
+advancing while paused or loading, producing a huge integral jump on resume),
+and proper anti-windup was added via an optional `iLimit` plus conditional
+integration when the output is saturated.
+
+*Tuning knobs, in likely order of usefulness:* `B747DR_pidPitchD` (0.02) in
+`B747.19.xt.hydraulicsmodel.lua`; `GS_RATE_GAIN` (250) and `GS_GAIN_FLOOR`
+(0.15) in `B747.19.xt.hydraulics_override.lua`.
+
+### LNAV
+
+**DIRECT TO now works.** The FMS publishes the target leg in
+`B747DR_ap_lnavHeading_mode` with the `-100` cross-track sentinel.
+`B747_getCurrentWayPoint_function()` then overwrote it from its own nearest-leg
+result in *two* places, and the clamp meant to prevent that assigned to a local
+(`best`) never read again — a dead store that did nothing. A direct-to is now a
+lock: the active leg is forced to the requested waypoint and the nearest-leg
+search is skipped entirely until the existing 10 NM release hands back to normal
+sequencing.
+
+**Active leg re-anchors by waypoint identity.** The name of the tracked waypoint
+is remembered; if the waypoint under the index changes identity, the route was
+edited and the leg follows the waypoint to its new index. This is the "it loses
+its location" case.
+
+**Sequencing is forward-only.** The old condition also fired for
+`best < fmscurrentIndex-1`, so the search could throw the active leg *backwards*
+to any geometrically closer leg — on procedure turns, holds, or parallel STAR
+segments. One non-forward move is still permitted when the tracked waypoint
+disappears entirely (a stock-CDU DIRECT TO deletes intervening waypoints and
+renumbers the rest), otherwise forward-only would deadlock LNAV after a stock
+direct-to.
+
+**Cross-track error is signed**, and the PROGRESS page shows L/R correctly
+instead of a hardcoded `L`. The no-match sentinel (100) is no longer published
+as a real cross-track.
+
+**Manually entered ILS course is honoured.** `findILS()` parsed the crew's
+FREQ/CRS entry, used the course to choose which ILS to tune, then discarded it —
+the assignment was commented out.
+
+---
+
+## v1.0.0 — first ILS and stability pass
 
 ### 1. ILS hunting on the localiser and glideslope
 
@@ -107,19 +197,6 @@ they need in-sim validation first or because they are larger pieces of work.
 
 **ILS / autopilot**
 
-- **No beam-gain scheduling.** Both loops apply a fixed gain to an *angular*
-  deviation (`75 × vdef_dots` for glideslope, `4 × ldef_dots` for localiser).
-  As range to the transmitter shrinks, the same dot count represents less
-  linear displacement, so effective loop gain rises continuously to the
-  threshold. Real 747 autopilots program beam gain down with radio altitude.
-- **PID tuning.** `pidPitchI` is set equal to `pidPitchP` (line 981 overrides
-  the branch above it) while `pidPitchD` is effectively zero; roll damping is
-  scheduled to its *minimum* on approach. Gains are scheduled on altitude
-  rather than dynamic pressure.
-- **Derivative kick.** `pid.lua` uses derivative-on-error rather than
-  derivative-on-measurement, so every step in the target injects a spike.
-  `dtime` also comes from `total_running_time_sec`, which advances while
-  paused.
 - **LOC self-demotion.** Exceeding 4 combined dots sets `nav_status` back to
   armed, treating an overshoot as signal loss. Should key off
   `nav1_display_horizontal` instead. The fixes above should stop the
@@ -127,26 +204,19 @@ they need in-sim validation first or because they are larger pieces of work.
 
 **FMS / LNAV**
 
-- **DIRECT TO is overwritten within one frame.** `B747_getCurrentWayPoint_function()`
-  writes `B747DR_ap_lnavHeading_mode` back to its own nearest-leg result
-  (`B747.70.xt.autopilot.lua` lines ~2298 and ~2314), erasing the direct-to
-  target. The clamp intended to prevent this is a dead store — it assigns to a
-  local that is never read again. The steering code also uses
-  `B747DR_fmscurrentIndex`, never `lnavHeading_mode`.
-- **Active leg is found by nearest-leg search, not sequenced.** The whole plan
-  is rescanned every frame for the closest leg. A real FMC sequences legs in
-  order at a turn-anticipation point. After a route edit the active leg is a
-  bare integer index into an array that was just rebuilt, with no re-anchoring
-  by waypoint identity.
-- **Manually selected courses do not stick.** `findILS()` parses the crew's
-  course and then discards it (the assignment is commented out), and
-  `B747_fltmgmt_setILS()` re-asserts frequency and course every 2 seconds
-  within 45 NM of destination.
+- **No leg-type model.** Legs are still selected by nearest-track search rather
+  than a real ARINC leg model (TF/DF/CF/HM). v1.1.0 made that search behave
+  (forward-only, identity-anchored, DIRECT TO honoured) but it is still a
+  search, not a sequencer. Holds in particular are not modelled.
+- **Turn anticipation is a distance heuristic**, not radius computed from bank
+  limit and TAS, so turn onset varies with groundspeed in ways the real FMC's
+  would not.
+- **Steering aims at a pseudo-waypoint** placed down the leg rather than
+  commanding bank from cross-track and track-angle error. This works but is not
+  how the real airplane flies a leg.
 - **Flat-earth geometry.** `getTriSpaceSolver()` uses plane trigonometry for
   along-track/cross-track; `getDistance()` uses the spherical law of cosines,
   which loses precision at short range.
-- **Cross-track is unsigned** and the PROGRESS page hardcodes an `L` prefix, so
-  deviation always displays as Left.
 
 **Performance**
 
