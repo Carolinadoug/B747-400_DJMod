@@ -1584,6 +1584,24 @@ function getHeadingDifference(desireddirection, current_heading)
 	return hdgError
 end
 
+-- Average two compass headings the short way round the circle.
+-- A plain (a+b)/2 is wrong across the 360/0 boundary: 359 and 001 average to
+-- 180 instead of 000. Used for combining the two ILS receiver bearings during
+-- localiser tracking.
+function averageHeadings(h1, h2)
+	local delta = h2 - h1
+	if delta > 180 then
+		delta = delta - 360
+	elseif delta < -180 then
+		delta = delta + 360
+	end
+	local avg = math.fmod(h1 + delta * 0.5, 360)
+	if avg < 0 then
+		avg = avg + 360
+	end
+	return avg
+end
+
 function getDistance(lat1, lon1, lat2, lon2)
 	if lat1 == lat2 and lon1 == lon2 then
 		return 0

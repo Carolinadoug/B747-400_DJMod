@@ -747,7 +747,14 @@ function B747_updateApproachHeading(fmsO)
                 B747DR_ap_lastCommand = simDRTime
             end
             --print("simDR_radio_nav_obs_deg[0] " ..simDR_radio_nav_obs_deg[0])
-            local bearing=(simDR_radio_nav1_bearing_deg +simDR_radio_nav2_bearing_deg)/2
+            -- Average the two receiver bearings the SHORT way round the compass.
+            -- The old code was a plain arithmetic mean, so nav1=359 / nav2=001
+            -- averaged to 180 rather than 000 - a 180 degree error fed straight
+            -- into diffap and the heading command. That produced sudden hard
+            -- excursions on any approach with a course near north (RWY 34-02).
+            -- dampYaw() in the hydraulics override already handles wraparound
+            -- this way; it just was not applied here.
+            local bearing=averageHeadings(simDR_radio_nav1_bearing_deg, simDR_radio_nav2_bearing_deg)
             --local diffap = math.min(math.abs(getHeadingDifference(simDR_radio_nav_obs_deg[0], bearing)),30)*2
             local diffap = getHeadingDifference(simDR_radio_nav_obs_deg[0], bearing)*2
             if diffap<-60 then
