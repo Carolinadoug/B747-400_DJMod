@@ -3667,8 +3667,16 @@ function hasSimConfig()
 	end
 	return setSimConfig
 end
+-- Throttled GC.  This was collectgarbage("collect") on EVERY frame, i.e. a
+-- full stop-the-world collection per frame.  Collecting periodically bounds
+-- memory just as well for a tiny fraction of the frame cost.
+local gcFrameCount = 0
 function after_physics()
-    collectgarbage("collect")
+    gcFrameCount = gcFrameCount + 1
+    if gcFrameCount >= 300 then
+        gcFrameCount = 0
+        collectgarbage("collect")
+    end
     if hasSimConfig()==false then return end
     local onGround=simDR_all_wheels_on_ground
     if debug_fuel>11 then return end

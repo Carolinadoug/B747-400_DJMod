@@ -687,9 +687,16 @@ function updateNDLatLong()
   end
 end
 
+-- Throttled GC - see note in B747.25.xt.fuel.lua.  Was a full collectgarbage
+-- ("collect") on every frame.
+local gcFrameCount = 0
 function after_physics()
-  collectgarbage("collect")
-  
+  gcFrameCount = gcFrameCount + 1
+  if gcFrameCount >= 300 then
+    gcFrameCount = 0
+    collectgarbage("collect")
+  end
+
   if debug_nd>0 then return end
   local diff=simDRTime-lastUpdate
   if simDR_version>=120012 then

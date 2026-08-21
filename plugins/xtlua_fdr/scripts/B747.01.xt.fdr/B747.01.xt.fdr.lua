@@ -479,8 +479,15 @@ function updateJSONData()
   end
 end
 
+-- Throttled GC - see note in B747.25.xt.fuel.lua.  Was a full collectgarbage
+-- ("collect") on every frame.
+local gcFrameCount = 0
 function after_physics()
-  collectgarbage("collect")
+  gcFrameCount = gcFrameCount + 1
+  if gcFrameCount >= 300 then
+    gcFrameCount = 0
+    collectgarbage("collect")
+  end
   if debug_fdr>0 then return end
   --if simDR_aircraft_on_ground>0 then return end
 

@@ -2373,8 +2373,15 @@ end
 
 --function before_physics() end
 debug_lighting     = deferred_dataref("laminar/B747/debug/lighting", "number")
+-- Throttled GC - see note in B747.25.xt.fuel.lua.  Was a full collectgarbage
+-- ("collect") on every frame.
+local gcFrameCount = 0
 function after_physics()
-    collectgarbage("collect")
+    gcFrameCount = gcFrameCount + 1
+    if gcFrameCount >= 300 then
+        gcFrameCount = 0
+        collectgarbage("collect")
+    end
   if debug_lighting>0 then return end
   
     B747_landing_light_brightness()

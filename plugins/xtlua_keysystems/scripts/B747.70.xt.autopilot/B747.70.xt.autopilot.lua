@@ -3501,11 +3501,18 @@ function hasSimConfig()
 	end
 	return setSimConfig
 end
+-- Throttled GC - see note in B747.25.xt.fuel.lua.  Was a full collectgarbage
+-- ("collect") on every frame.
+local gcFrameCount = 0
 function after_physics()
 	if hasSimConfig() == false then
 		return
 	end
-	collectgarbage("collect")
+	gcFrameCount = gcFrameCount + 1
+	if gcFrameCount >= 300 then
+		gcFrameCount = 0
+		collectgarbage("collect")
+	end
 	if debug_autopilot > 0 then
 		return
 	end

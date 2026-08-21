@@ -1191,8 +1191,15 @@ function flight_start()
 	B747DR_pidepr_eccD = 0.01
 	B747DR_pidepr_eccP = 0.001
 end
+-- Throttled GC - see note in B747.25.xt.fuel.lua.  Was a full collectgarbage
+-- ("collect") on every frame.
+local gcFrameCount = 0
 function after_physics()
-	collectgarbage("collect")
+	gcFrameCount = gcFrameCount + 1
+	if gcFrameCount >= 300 then
+		gcFrameCount = 0
+		collectgarbage("collect")
+	end
 	if hasSimConfig()==false then return end
 	if debug_ecc>0 then return end
 
