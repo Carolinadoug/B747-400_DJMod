@@ -106,10 +106,10 @@ function getHeading(lat1,lon1,lat2,lon2)
   return math.deg(retVal)
 end
 function getHeadingDifference(desireddirection,current_heading)
-	error = current_heading - desireddirection
-	if (error >  180) then error =error- 360 end
-	if (error < -180) then error =error+ 360 end
-	return error
+	local hdgError = current_heading - desireddirection
+	if (hdgError >  180) then hdgError = hdgError - 360 end
+	if (hdgError < -180) then hdgError = hdgError + 360 end
+	return hdgError
 end
 
 function getDistance(lat1,lon1,lat2,lon2)

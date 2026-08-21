@@ -88,17 +88,17 @@ function cleanFMSLine(line)
     return retval
 end 
 function getHeadingDifference(desireddirection,current_heading)
-	error = current_heading - desireddirection
-	if (error >  180) then error =error- 360 end
-	if (error < -180) then error =error+ 360 end
-	return error
+	local hdgError = current_heading - desireddirection
+	if (hdgError >  180) then hdgError = hdgError - 360 end
+	if (hdgError < -180) then hdgError = hdgError + 360 end
+	return hdgError
 end
 function getHeadingDifferenceM(desireddirection,current_heading)
-	error = current_heading - desireddirection
-	if (error >  180) then error =error- 360 end
-	if (error < -180) then error =error+ 360 end
-	if error<0 then error = error *-1 end
-	return error
+	local hdgError = current_heading - desireddirection
+	if (hdgError >  180) then hdgError = hdgError - 360 end
+	if (hdgError < -180) then hdgError = hdgError + 360 end
+	if hdgError < 0 then hdgError = hdgError * -1 end
+	return hdgError
 end
 function getDistance(lat1,lon1,lat2,lon2)
   alat=math.rad(lat1)

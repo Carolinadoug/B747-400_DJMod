@@ -1570,14 +1570,18 @@ function getHeading(lat1, lon1, lat2, lon2)
 	return math.deg(retVal)
 end
 function getHeadingDifference(desireddirection, current_heading)
-	error = current_heading - desireddirection
-	if (error > 180) then
-		error = error - 360
+	-- NOTE: this used to assign to a global named "error", which shadowed Lua's
+	-- built-in error() for the whole script.  Once called, any later error(...)
+	-- call (including xtlua's own "Unable to find command" diagnostic) failed
+	-- with "attempt to call a number value".
+	local hdgError = current_heading - desireddirection
+	if (hdgError > 180) then
+		hdgError = hdgError - 360
 	end
-	if (error < -180) then
-		error = error + 360
+	if (hdgError < -180) then
+		hdgError = hdgError + 360
 	end
-	return error
+	return hdgError
 end
 
 function getDistance(lat1, lon1, lat2, lon2)

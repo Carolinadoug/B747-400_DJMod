@@ -16,10 +16,10 @@ function deferred_dataref(name,nilType,callFunction)
     return find_dataref(name)
 end
 function getHeadingDifference(desireddirection,current_heading)
-	error = current_heading - desireddirection
-	if (error >  180) then error =error- 360 end
-	if (error < -180) then error =error+ 360 end
-	return error
+	local hdgError = current_heading - desireddirection
+	if (hdgError >  180) then hdgError = hdgError - 360 end
+	if (hdgError < -180) then hdgError = hdgError + 360 end
+	return hdgError
 end
 --simDR_autopilot_nav_status = find_dataref("sim/cockpit2/autopilot/nav_status")
 simDR_autopilot_nav_status = find_dataref("laminar/B747/autopilot/actual_nav_status")
