@@ -88,6 +88,11 @@ B747DR_engines_numLeverClimb    = deferred_dataref("laminar/B747/flt_ctrls/numLe
 ----- SPEEDBRAKE LEVER ------------------------------------------------------------------
 --local B747_sb_manip_changed = 0
 B747_sb_manip_changed = deferred_dataref("laminar/B747/flt_ctrls/speedbrake_lever_changed", "number")
+-- 0 = normal, 1 = reverse the speedbrake axis travel.
+-- Lets a joystick profile shared across several aircraft be left alone when
+-- only this one wants the opposite sense. Set from SIM.speedbrake_axis in the
+-- sim config, toggled on the MAINT > SIM CONFIG CDU page.
+B747DR_speedbrake_axis_reverse  = deferred_dataref("laminar/B747/flt_ctrls/speedbrake_axis_reverse", "number")
 B747DR_speedbrake_auto_ext      = deferred_dataref("B747DR/speedbrake/auto_extend", "number")
 
 --local B747_speedbrake_stop = 0

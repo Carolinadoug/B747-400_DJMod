@@ -17,6 +17,8 @@ B747DR_refuel							= deferred_dataref("laminar/B747/fuel/refuel", "number")
 --silvereagle added to end
 -- Misc.
 B747DR_fmc_spill_lights		= deferred_dataref("laminar/B747/fmc/spill_lights", "number")
+-- Created in the fltCtrls init script; toggled from MAINT > SIM CONFIG p2.
+B747DR_speedbrake_axis_reverse = find_dataref("laminar/B747/flt_ctrls/speedbrake_axis_reverse")
 B747DR_fmc_cockpit_seats_hide	= deferred_dataref("laminar/B747/fmc/cockpit_seats_hide", "number")
 --silvereagle end
 
@@ -2306,6 +2308,19 @@ function fmsFunctions.setdata(fmsO,value)
 	end
 	
 --silvereagle added to end
+    elseif value=="speedbrakeAxis" then
+		-- Reverses the speedbrake axis for this aircraft only, so a joystick
+		-- profile shared with other types does not have to be changed.
+		if B747DR_speedbrake_axis_reverse == 0 then
+			fmsO["scratchpad"] = "REV"
+			B747DR_speedbrake_axis_reverse = 1
+		else
+			fmsO["scratchpad"] = "NORM"
+			B747DR_speedbrake_axis_reverse = 0
+		end
+		simConfigData["data"].SIM.speedbrake_axis = fmsO.scratchpad
+		pushSimConfig(simConfigData["data"]["values"])
+
     elseif value=="spillLights" then
 		if B747DR_fmc_spill_lights == 0 then
 			fmsO["scratchpad"] = "HI"

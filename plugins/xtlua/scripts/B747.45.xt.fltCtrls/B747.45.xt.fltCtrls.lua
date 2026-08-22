@@ -112,6 +112,25 @@ simDR_prop_mode                 = find_dataref("sim/cockpit2/engine/actuators/pr
 simDR_all_wheels_on_ground      = find_dataref("sim/flightmodel/failures/onground_any")
 B747DR_reverser_lockout            = deferred_dataref("laminar/B747/engines/reverser_lockout", "number")
 simDR_speedbrake_ratio_control  = find_dataref("sim/cockpit2/controls/speedbrake_ratio")
+B747DR_speedbrake_axis_reverse  = find_dataref("laminar/B747/flt_ctrls/speedbrake_axis_reverse")
+
+--[[
+    Optional reversal of the speedbrake axis.
+
+    sim/cockpit2/controls/speedbrake_ratio runs -0.5 (ARMED) .. 0.0 (down)
+    .. 1.0 (full up). If the hardware axis is wired the other way round for
+    this aircraft only, reversing it here avoids having to keep a separate
+    joystick profile just for the 747.
+
+    Only the 0..1 working travel is mirrored. The negative ARMED detent is a
+    sentinel rather than a position, so it is passed through untouched and
+    the arm/disarm logic downstream is unaffected.
+--]]
+function B747_sb_axis(raw)
+    if B747DR_speedbrake_axis_reverse ~= 1 then return raw end
+    if raw < 0.0 then return raw end   -- ARMED sentinel, not a travel position
+    return 1.0 - raw
+end
 simDR_flap_handle_deploy_ratio  = find_dataref("sim/cockpit2/controls/flap_handle_deploy_ratio")
 simDR_flap_ratio_control        = find_dataref("sim/cockpit2/controls/flap_ratio")                      -- FLAP HANDLE
 B747DR_flap_ratio               = deferred_dataref("laminar/B747/cablecontrols/flap_ratio", "number") -- USED FLAP HANDLE
@@ -663,19 +682,20 @@ function B747_speedbrake_sync()
                 stop_timer(autoSpeedbrakeDRrst)    
             end	
             run_after_time(autoSpeedbrakeDRrst, 1.0)
-			if simDR_speedbrake_ratio_control == -0.5 or (simDR_speedbrake_ratio_control > 0.01 and simDR_speedbrake_ratio_control <= 0.05) then
+			local sbAxis = B747_sb_axis(simDR_speedbrake_ratio_control)
+			if sbAxis == -0.5 or (sbAxis > 0.01 and sbAxis <= 0.05) then
 				B747DR_speedbrake_lever = 0.125
                 B747DR_CAS_memo_status[45] = 1
                 simDR_speedbrake_ratio_control = -0.5	
-			elseif simDR_speedbrake_ratio_control > -0.5 and simDR_speedbrake_ratio_control <= 0.0 then	
+			elseif sbAxis > -0.5 and sbAxis <= 0.0 then	
 				B747DR_speedbrake_lever = 0.0
                 B747DR_CAS_memo_status[45] = 0
 			else
                 B747DR_CAS_memo_status[45] = 0
 				if B747_speedbrake_stop == 0 then											-- ON GROUND
-					B747DR_speedbrake_lever = B747_rescale(0.0, 0.15, 1.0, 1.0, simDR_speedbrake_ratio_control)
+					B747DR_speedbrake_lever = B747_rescale(0.0, 0.15, 1.0, 1.0, sbAxis)
 				elseif B747_speedbrake_stop == 1 then										-- IN FLIGHT
-					B747DR_speedbrake_lever = B747_rescale(0.0, 0.15, 1.0, 0.53, simDR_speedbrake_ratio_control)	
+					B747DR_speedbrake_lever = B747_rescale(0.0, 0.15, 1.0, 0.53, sbAxis)	
 				end		
 			end	
 	
@@ -689,20 +709,20 @@ end
 
 function autoSpeedbrakeDRrst()
     B747DR_speedbrake_auto_ext = 0
-    if simDR_speedbrake_ratio_control == -0.5 or (simDR_speedbrake_ratio_control > 0.01 and simDR_speedbrake_ratio_control <= 0.05) then
+    local sbAxis = B747_sb_axis(simDR_speedbrake_ratio_control)
+    if sbAxis == -0.5 or (sbAxis > 0.01 and sbAxis <= 0.05) then
         B747DR_speedbrake_lever = 0.125
         B747DR_CAS_memo_status[45] = 1
         simDR_speedbrake_ratio_control = -0.5	
-    elseif simDR_speedbrake_ratio_control > -0.5 and simDR_speedbrake_ratio_control <= 0.0 then	
+    elseif sbAxis > -0.5 and sbAxis <= 0.0 then	
         B747DR_speedbrake_lever = 0.0
         B747DR_CAS_memo_status[45] = 0
-        print("zero lever")
     else
         B747DR_CAS_memo_status[45] = 0
         if B747_speedbrake_stop == 0 then											-- ON GROUND
-            B747DR_speedbrake_lever = B747_rescale(0.0, 0.15, 1.0, 1.0, simDR_speedbrake_ratio_control)
+            B747DR_speedbrake_lever = B747_rescale(0.0, 0.15, 1.0, 1.0, sbAxis)
         elseif B747_speedbrake_stop == 1 then										-- IN FLIGHT
-            B747DR_speedbrake_lever = B747_rescale(0.0, 0.15, 1.0, 0.53, simDR_speedbrake_ratio_control)	
+            B747DR_speedbrake_lever = B747_rescale(0.0, 0.15, 1.0, 0.53, sbAxis)	
         end		
     end	
 end

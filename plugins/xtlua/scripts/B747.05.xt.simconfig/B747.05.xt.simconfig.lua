@@ -44,6 +44,7 @@ simDR_baro_fo				= find_dataref("sim/cockpit/misc/barometer_setting2")
 --*************************************************************************************--
 -- Holds all SimConfig options
 B747DR_simconfig_data						= deferred_dataref("laminar/B747/simconfig", "string")
+B747DR_speedbrake_axis_reverse				= find_dataref("laminar/B747/flt_ctrls/speedbrake_axis_reverse")
 B747DR_newsimconfig_data					= deferred_dataref("laminar/B747/newsimconfig", "number")
 B747DR_is_freighter          				= deferred_dataref("laminar/B747/freighter", "number")
 B747DR_efis_baro_ref_capt_sel_dial_pos		= find_dataref("laminar/B747/efis/baro_ref/capt/sel_dial_pos", "number")
@@ -100,6 +101,7 @@ function simconfig_values()
 					 fo_inbd = "NORM",  --PFD = 0, NORM = 1, EICAS = 2
 					 fo_lwr = "NORM",  --ND = 0, NORM = 1, EICAS PRI = 2
 					 spill_lights = "NORM", --HI = 1, NORM = 0 --silvereagle
+					 speedbrake_axis = "NORM", --NORM = 0, REV = 1 (reverse the speedbrake axis travel)
 					 cockpit_seats_hide = "SHOW", --SHOW = 0 (default), HIDE = 1, (Useful to hide cockpit seats when using 3 monitors and the seats are in the way of viewing the instrument panel.) --silvereagle
 			},
 			PLANE = {
@@ -341,6 +343,14 @@ function set_loaded_configs()
 		B747DR_acarsProvider=0
 	else
 		B747DR_acarsProvider=1
+	end
+
+	-- Speedbrake axis sense. Nil-guarded: configs saved before this option
+	-- existed simply have no key, and must default to NORM rather than error.
+	if simConfigData["data"].SIM.speedbrake_axis == "REV" then
+		B747DR_speedbrake_axis_reverse=1
+	else
+		B747DR_speedbrake_axis_reverse=0
 	end
 
 	for key, value in pairs(simConfigData["data"].SOUND) do

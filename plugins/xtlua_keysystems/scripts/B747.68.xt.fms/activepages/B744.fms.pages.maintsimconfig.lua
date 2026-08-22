@@ -51,6 +51,7 @@ fmsPages["MAINTSIMCONFIG"].getPage=function(self,pgNo,fmsID)
 		fmsFunctionsDefs["MAINTSIMCONFIG"]["L1"]={"setdata","spillLights"}
 		fmsFunctionsDefs["MAINTSIMCONFIG"]["L2"]={"setdata","cockpitSeatsHide"}
 		fmsFunctionsDefs["MAINTSIMCONFIG"]["L3"]={"setdata","setacarsprovider"}
+		fmsFunctionsDefs["MAINTSIMCONFIG"]["L4"]={"setdata","speedbrakeAxis"}
 		fmsFunctionsDefs["MAINTSIMCONFIG"]["R6"]={"setdata","simConfigSave"}
 		local lineA = ""
 		if B747DR_fmc_spill_lights==0 then
@@ -63,6 +64,12 @@ fmsPages["MAINTSIMCONFIG"].getPage=function(self,pgNo,fmsID)
 			lineB = "SHOW/    "
 		else
 			lineB = "    /HIDE"
+		end
+		local lineD = ""
+		if B747DR_speedbrake_axis_reverse==0 then
+			lineD = "NORM/   "
+		else
+			lineD = "    /REV"
 		end
 		local lineC = "OFFLINE"
 		if acars==1 then
@@ -81,7 +88,7 @@ fmsPages["MAINTSIMCONFIG"].getPage=function(self,pgNo,fmsID)
 		"                        ",
 		"<ACARS           "..lineC,
 		"                        ",
-		"                        ",
+		"<SPEEDBRAKE AXIS "..lineD,
 		"                        ",
 		"                        ",
 		"------------------------",
