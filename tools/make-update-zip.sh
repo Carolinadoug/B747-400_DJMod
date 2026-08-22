@@ -35,8 +35,12 @@ TO_NAME="$(git rev-parse --abbrev-ref "$TO" 2>/dev/null || echo "$TO")"
 OUT="${3:-B747-400_DJMod_${FROM_NAME}_to_${TO_NAME}_update.zip}"
 
 # Added, Copied, Modified, Renamed (new name) - i.e. everything that must ship.
-mapfile -t CHANGED < <(git diff --name-only --diff-filter=ACMR "$FROM" "$TO")
-mapfile -t DELETED < <(git diff --name-only --diff-filter=D "$FROM" "$TO")
+#
+# releases/ is excluded: it holds previously published update packages, which
+# are distribution metadata rather than aircraft files. Without this an update
+# zip ends up containing the previous update zip.
+mapfile -t CHANGED < <(git diff --name-only --diff-filter=ACMR "$FROM" "$TO" -- . ':(exclude)releases/*')
+mapfile -t DELETED < <(git diff --name-only --diff-filter=D "$FROM" "$TO" -- . ':(exclude)releases/*')
 
 if [ "${#CHANGED[@]}" -eq 0 ] && [ "${#DELETED[@]}" -eq 0 ]; then
     echo "No differences between $FROM_NAME and $TO_NAME - nothing to package."
