@@ -14,5 +14,8 @@ liveries/British Airways G-CIVX/
 fmod/747-400F.snd
 objects/74F_exterior/
 
-# DJMod build artifacts
-*_update.zip
+# DJMod build artifacts - generated zips are ignored at the repo root,
+# but the published ones under releases/ are tracked so they can be
+# downloaded straight from GitHub without a Releases page.
+/*_update.zip
+!releases/*.zip
