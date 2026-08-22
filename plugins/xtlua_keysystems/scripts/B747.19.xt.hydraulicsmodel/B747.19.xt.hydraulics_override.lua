@@ -555,6 +555,35 @@ function get_FPM_bias()
    -- print("fpmBias "..fpmBias)
     return fpmBias
 end
+--[[
+    VNAV SPD / FLCH SPEED-ON-PITCH TERMS
+    ------------------------------------
+    The loop in the pitchMode 4/8 branch below is a pure rate-based nudge
+    integrator: it moves the commanded pitch by +/-rog depending only on
+    whether the speed is CHANGING fast enough, and has no term proportional to
+    how far off the target speed actually is. It does converge - hence the
+    smooth climb - but the commanded pitch never visibly reflects the speed
+    target, so the flight director bars read as disconnected from the speed
+    bug. On the real aircraft VNAV SPD pitch tracks the FMS speed directly.
+
+    These add proportional and rate terms on top of that integrator, applied to
+    the COMMAND only. At steady state both are ~0, so the integrator still sets
+    the trim pitch and these do not fight it; during a speed excursion the bars
+    now command the pitch needed to recover the target.
+
+    Sign convention: too FAST -> pitch UP to trade speed for climb.
+
+    Tuning:
+      SPD_PITCH_P      degrees of pitch per knot of speed error
+      SPD_PITCH_D      degrees of pitch per knot/second of acceleration
+      SPD_PITCH_LIMIT  cap on their combined contribution, degrees
+      SPD_ERR_CLAMP    speed error is clamped to this before use, knots
+--]]
+local SPD_PITCH_P     = 0.15
+local SPD_PITCH_D     = 0.80
+local SPD_PITCH_LIMIT = 5.0
+local SPD_ERR_CLAMP   = 25.0
+
 function ap_director_pitch(pitchMode)
     time=simDRTime-previous_pitchTime
     previous_pitchTime=simDRTime
@@ -651,8 +680,31 @@ function ap_director_pitch(pitchMode)
             last_simDR_AHARS_pitch_heading_deg_pilot=15
         end
         retval=last_simDR_AHARS_pitch_heading_deg_pilot
-        last_simDR_AHARS_pitch_heading_deg_pilot=retval
-        
+
+        -- Speed-error and speed-rate terms on the COMMAND (see the note by
+        -- SPD_PITCH_P above). The integrator itself is deliberately left
+        -- untouched, so the smooth convergence it provides is preserved and
+        -- only the flight director command becomes speed-aware.
+        local vError = simDR_ind_airspeed_kts_pilot - simDR_autopilot_airspeed_kts
+        if vError > SPD_ERR_CLAMP then vError = SPD_ERR_CLAMP
+        elseif vError < -SPD_ERR_CLAMP then vError = -SPD_ERR_CLAMP end
+        local vRate = 0
+        if time > 0.01 then
+            vRate = speed_delta / time
+            if vRate > 3 then vRate = 3 elseif vRate < -3 then vRate = -3 end
+        end
+        local spdTerm = SPD_PITCH_P * vError + SPD_PITCH_D * vRate
+        if spdTerm > SPD_PITCH_LIMIT then spdTerm = SPD_PITCH_LIMIT
+        elseif spdTerm < -SPD_PITCH_LIMIT then spdTerm = -SPD_PITCH_LIMIT end
+        retval = retval + spdTerm
+        if retval < -3.5 then retval = -3.5 elseif retval > 15 then retval = 15 end
+        if debug_flight_directors==1 then
+            print("VNAV SPD: target "..simDR_autopilot_airspeed_kts.." ias "..
+                  simDR_ind_airspeed_kts_pilot.." vError "..vError.." vRate "..vRate..
+                  " trimPitch "..last_simDR_AHARS_pitch_heading_deg_pilot..
+                  " spdTerm "..spdTerm.." command "..retval)
+        end
+
         return ap_director_pitch_retVal(pitchMode,retval)
     elseif pitchMode~=2 and 
     (pitchMode==5 or pitchMode==9 or 
