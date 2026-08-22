@@ -16,6 +16,64 @@ To update an existing install without re-downloading 2.6 GB, see
 
 ---
 
+## v1.2.0 — VNAV speed tracking and speedbrake axis option
+
+### VNAV SPD / FLCH now pitches for the FMS speed target
+
+Reported after flight test: climb is smooth, but the flight director bars do
+not reflect the speed target on the ASI — VNAV vertical guidance looks
+disconnected from the FMS-computed climb speed.
+
+Two things it turned out **not** to be, both checked first:
+
+- *FD routing is fine.* The PFD reads `laminar/B747/autopilot/flight_director_pitch_deg`
+  (confirmed in the `.acf` panel definition), which is the dataref this mod
+  writes. The bars do show what is actually being flown.
+- *The speed chain is intact.* FMS `clbrestspd`/`clbspd`/`transpd`/`crzspd` →
+  `B747DR_ap_ias_dial_value` → `simDR_autopilot_airspeed_kts`, and
+  `ap_director_pitch()` targets exactly that.
+
+The defect was the pitch law. The VNAV SPD / FLCH branch is a pure rate-based
+nudge integrator: it moves commanded pitch by ±`rog` based only on whether
+speed is *changing* fast enough, gated by deadbands, with **no term
+proportional to how far off the target speed actually is**. It converges
+eventually — hence the smooth climb — but the command never visibly encodes
+the speed error, so the bars read as disconnected from the speed bug. The real
+aircraft pitches directly for the FMS speed in VNAV SPD.
+
+Proportional and rate terms on speed error are now applied to the command:
+
+```
+vError  = IAS − target                 (clamped ±25 kt)
+vRate   = dIAS/dt                      (clamped ±3 kt/s)
+command = trimPitch + 0.15·vError + 0.80·vRate     (term capped ±5°)
+```
+
+Sign convention is speed-on-elevator: too fast pitches up to trade speed for
+climb. The existing integrator is deliberately left untouched, so the smooth
+convergence gained in v1.1.0 is preserved and only the command becomes
+speed-aware. At steady state both new terms are ~0, so they do not fight the
+integrator.
+
+*Tuning:* `SPD_PITCH_P`, `SPD_PITCH_D`, `SPD_PITCH_LIMIT`, `SPD_ERR_CLAMP` at
+the top of `ap_director_pitch` in `B747.19.xt.hydraulics_override.lua`. Setting
+`SPD_PITCH_P` and `SPD_PITCH_D` to 0 restores exactly the v1.1.0 behaviour.
+
+### SPEEDBRAKE AXIS option
+
+New **SPEEDBRAKE AXIS NORM/REV** toggle at L4 on **MAINT > SIM CONFIG page 2**,
+saved per livery with SAVE like the other options there. Reverses the
+speedbrake axis for this aircraft only, so a joystick profile shared with other
+types does not need changing just for the 747.
+
+Only the 0..1 working travel is mirrored — the negative ARMED value is a
+sentinel rather than a position, so it passes through untouched and the
+arm/disarm logic is unaffected. Defaults to NORM; configs saved before this
+option existed have no key and fall back to NORM without erroring, so no
+migration is needed.
+
+---
+
 ## v1.1.0 — vertical axis and LNAV
 
 Flight test of v1.0.0 reported lateral tracking now stable, but pitch hunting
