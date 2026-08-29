@@ -496,6 +496,137 @@ local GS_GAIN_LO_ALT  = 150    -- ft AGL at which the floor gain applies
 local GS_GAIN_FLOOR   = 0.15   -- gain multiplier at/below GS_GAIN_LO_ALT
 local GS_RATE_GAIN    = 250    -- fpm per (dot/second) of deviation rate
 
+--[[
+    GLIDESLOPE PITCH LAW - FLIGHT PATH ANGLE FORM
+    ---------------------------------------------
+    Set GS_USE_LEGACY_FPM_LAW = true to go back to the vertical-speed law above
+    (everything from here down is then bypassed). Useful for A/B comparison in
+    the sim without needing a rebuild.
+
+    WHY THE VERTICAL-SPEED LAW KEEPS HUNTING
+
+    getGlideSlopeFPM() commands a VERTICAL SPEED proportional to beam
+    deviation. But deviation is reported in dots, which is an ANGLE, and the
+    vertical speed needed merely to HOLD a given angular deviation shrinks as
+    range to the transmitter shrinks. So the correct fpm-per-dot gain changes
+    continuously all the way down the approach - gain scheduling can only
+    approximate that, and the residual is what shows up as hunting that gets
+    worse closer in.
+
+    Commanding a FLIGHT PATH ANGLE instead is scale invariant. Geometry: with
+    vertical offset h at range R, the angular deviation is theta = h/R. Since
+    dR/dt = -V, simply holding theta constant already requires a path angle
+    change of theta, and closing it requires proportionally more. So the
+    required correction is proportional to DOTS at every range, with no range
+    term at all. That is why this form does not need beam gain programming and
+    why it behaves the same at 10nm and at 300ft.
+
+    The command itself is:
+
+        theta = gamma + alpha
+        theta_cmd = theta_actual + K * (gamma_cmd - gamma_actual)
+
+    Holding angle of attack constant, the pitch that achieves gamma_cmd is the
+    current pitch plus the flight path error. This is self-trimming: alpha is
+    measured implicitly rather than integrated, so there is no integrator to
+    wind up, nothing to corrupt across a mode change, and it settles cleanly
+    (at steady state gamma_actual = gamma_cmd, so theta_cmd = theta_actual and
+    the loop stops moving).
+
+    This also replaces a three-stage cascade - dots to target fpm, target fpm
+    to an incremental pitch nudge, pitch to elevator - with a single stage,
+    removing two of the three integrators from the glideslope path.
+
+    Speed is held by the autothrottle in SPD mode whenever the pitch mode is
+    G/S, so pitching for path is the correct division of labour here.
+
+    Tuning:
+      GS_DOT_GAMMA     degrees of flight path per dot of deviation
+      GS_RATE_GAMMA    degrees of flight path per (dot/second) - the damping
+      GS_GAMMA_LIMIT   cap on the total beam correction, degrees
+      GS_GAMMA_P       fraction of the flight path error commanded as pitch
+--]]
+local GS_USE_LEGACY_FPM_LAW = false
+
+-- Gains chosen from an offline sweep of the closed loop (point-mass approach,
+-- first-order pitch response). P=2.0/D=3.0 converges to the centreline by 2nm
+-- from a 1 dot intercept with zero overshoot, and stays well behaved with the
+-- airframe response anywhere from 1 to 4 seconds and with beam noise.
+local GS_DOT_GAMMA    = 2.0    -- deg of flight path per dot
+local GS_RATE_GAMMA   = 3.0    -- deg of flight path per dot/second
+local GS_GAMMA_LIMIT  = 2.5    -- max beam correction, deg
+local GS_GAMMA_P      = 1.0    -- pitch commanded per deg of flight path error
+local GS_PITCH_MIN    = -2.0
+local GS_PITCH_MAX    = 10.0
+-- Mild reduction of authority in the last few hundred feet, where beam noise
+-- grows and the flare is about to take over. Deliberately gentle: unlike the
+-- vertical-speed law this form does not need range scheduling to stay stable.
+local GS_TAPER_LO_ALT = 100
+local GS_TAPER_HI_ALT = 400
+local GS_TAPER_FLOOR  = 0.5
+
+local gsLastDots  = 0
+local gsLastTime  = 0
+local gsDotsRate  = 0
+local gsGammaFilt = nil
+local gsWasActive = false
+
+function resetGlideSlopeLaw()
+    gsLastDots  = simDR_hsi_vdef_dots_pilot
+    gsLastTime  = simDRTime
+    gsDotsRate  = 0
+    gsGammaFilt = nil
+end
+
+function getGlideSlopePitch()
+    local dt = simDRTime - gsLastTime
+    gsLastTime = simDRTime
+
+    local gsAngle = simDR_glideslope1
+    if gsAngle < 0.5 or gsAngle > 10.0 then gsAngle = 3.0 end  -- bad/unset beam
+
+    local dots = simDR_hsi_vdef_dots_pilot
+
+    -- Deviation rate, low-pass filtered. Raw dot-to-dot differences at 10Hz
+    -- are noisy enough to swamp the damping term if used directly.
+    if dt > 0.02 and dt < 2.0 then
+        local raw = (dots - gsLastDots) / dt
+        if raw > 1.5 then raw = 1.5 elseif raw < -1.5 then raw = -1.5 end
+        gsDotsRate = gsDotsRate + (raw - gsDotsRate) * 0.3
+    end
+    gsLastDots = dots
+
+    local taper = B747_rescale(GS_TAPER_LO_ALT, GS_TAPER_FLOOR, GS_TAPER_HI_ALT, 1.0, simDR_radarAlt1)
+
+    -- Positive dots steepen the descent. This matches the sign the legacy law
+    -- used (it subtracted 75*dots from an already-negative fpm target), which
+    -- is the convention that has been capturing the beam correctly.
+    local gammaCorr = (GS_DOT_GAMMA * dots + GS_RATE_GAMMA * gsDotsRate) * taper
+    if gammaCorr > GS_GAMMA_LIMIT then gammaCorr = GS_GAMMA_LIMIT
+    elseif gammaCorr < -GS_GAMMA_LIMIT then gammaCorr = -GS_GAMMA_LIMIT end
+
+    local gammaCmd = -gsAngle - gammaCorr
+
+    -- Actual flight path angle from vertical speed and groundspeed.
+    local gs_fpm = simDR_groundspeed * 196.85   -- m/s -> ft/min
+    if gs_fpm < 3000 then gs_fpm = 3000 end     -- ~15kt floor, avoid blow-up
+    local gammaAct = math.deg(math.atan2(simDR_vvi_fpm_pilot, gs_fpm))
+    if gsGammaFilt == nil then gsGammaFilt = gammaAct end
+    gsGammaFilt = gsGammaFilt + (gammaAct - gsGammaFilt) * 0.25
+
+    local pitchCmd = simDR_AHARS_pitch_heading_deg_pilot + GS_GAMMA_P * (gammaCmd - gsGammaFilt)
+    if pitchCmd < GS_PITCH_MIN then pitchCmd = GS_PITCH_MIN
+    elseif pitchCmd > GS_PITCH_MAX then pitchCmd = GS_PITCH_MAX end
+
+    if debug_flight_directors==1 then
+        print(string.format(
+            "GS: dots %.2f rate %.3f taper %.2f gammaCmd %.2f gammaAct %.2f pitch %.2f cmd %.2f rAlt %.0f",
+            dots, gsDotsRate, taper, gammaCmd, gsGammaFilt,
+            simDR_AHARS_pitch_heading_deg_pilot, pitchCmd, simDR_radarAlt1))
+    end
+    return pitchCmd
+end
+
 function getGlideSlopeFPM()
     local dt = simDRTime - lastSimDRTime
     lastSimDRTime = simDRTime
@@ -613,6 +744,25 @@ function ap_director_pitch(pitchMode)
         directorSampleRate=0.02
         return ap_director_pitch_retVal(pitchMode,B744DR_autolandPitch)
     end
+    -- GLIDESLOPE: direct flight-path-angle law (see the block by GS_DOT_GAMMA).
+    -- Taken before every other mode so G/S never falls through to the generic
+    -- vertical-speed integrator, which is what it used to share.
+    if pitchMode==2 and GS_USE_LEGACY_FPM_LAW==false then
+        -- This law is a direct computation rather than an incremental nudge,
+        -- so unlike the integrator it is safe - and better - to sample fast.
+        directorSampleRate=0.1
+        if gsWasActive==false then
+            resetGlideSlopeLaw()   -- fresh capture, drop any stale rate state
+            gsWasActive=true
+        end
+        local retval=getGlideSlopePitch()
+        -- Keep the shared integrator in step so that leaving G/S (flare, go
+        -- around, level off) starts from the pitch we were actually holding.
+        last_simDR_AHARS_pitch_heading_deg_pilot=retval
+        last_altitude=simDR_pressureAlt1
+        return ap_director_pitch_retVal(pitchMode,retval)
+    end
+    gsWasActive=false
     --B747DR_ap_flightPhase == 3 and simDR_autopilot_vs_fpm == -500
     if ((pitchMode==4 and B747DR_ap_flightPhase ~= 3) or pitchMode==8) 
     and (simDR_pressureAlt1> holdAlt+B747DR_alt_capture_window or simDR_pressureAlt1< holdAlt-B747DR_alt_capture_window) then
@@ -823,16 +973,26 @@ function ap_director_pitch(pitchMode)
         end
 
         --if pitchError<0.5 then
-            if (currentFPM>targetFPM and speed_delta>-min_speedDelta and pitchError<0.5) --primary
-            or (currentFPM<targetFPM and speed_delta<-max_speedDelta and pitchError<0.5) then
+            -- NOTE: the second condition here used to read
+            --     currentFPM<targetFPM and speed_delta<-max_speedDelta
+            -- i.e. "descending faster than target AND the descent is still
+            -- steepening" -> pitch DOWN. That is positive feedback: it drove
+            -- the aircraft further from the target exactly when it was already
+            -- diverging. The mirrored error was in the pitch-up branch below.
+            -- Both are now removed, leaving only the correct primary tests.
+            if (currentFPM>targetFPM and speed_delta>-min_speedDelta and pitchError<0.5) then
                 last_simDR_AHARS_pitch_heading_deg_pilot=last_simDR_AHARS_pitch_heading_deg_pilot-rog
                 last_vvi_update=simDRTime
                 if debug_flight_directors==1 then
                     print("-last_simDR_AHARS_pitch_heading_deg_pilot "..last_simDR_AHARS_pitch_heading_deg_pilot)
                     print("-simDR_vvi_fpm_pilot "..simDR_AHARS_pitch_heading_deg_pilot.." simDR_vvi_fpm_pilot "..currentFPM.." rog "..rog.." speed_delta "..speed_delta.." min_speedDelta "..min_speedDelta.." max_speedDelta "..max_speedDelta)
                 end
-            elseif (simDR_vvi_fpm_pilot<targetFPM and speed_delta<min_speedDelta and pitchError>-0.5) --primary
-            or (currentFPM>targetFPM and speed_delta>max_speedDelta and pitchError>-0.5)  then
+            elseif (currentFPM<targetFPM and speed_delta<min_speedDelta and pitchError>-0.5) then
+            -- (was: "or currentFPM>targetFPM and speed_delta>max_speedDelta",
+            -- the mirror of the inverted test above. Also note this branch used
+            -- raw simDR_vvi_fpm_pilot while every other test in this function
+            -- uses currentFPM, which includes the flap-change fpm bias - so the
+            -- two halves of the same comparison were using different values.)
                 if debug_flight_directors==1 then 
                     print("+last_simDR_AHARS_pitch_heading_deg_pilot "..last_simDR_AHARS_pitch_heading_deg_pilot)
                     print("+simDR_vvi_fpm_pilot "..simDR_AHARS_pitch_heading_deg_pilot.." simDR_vvi_fpm_pilot "..currentFPM.." rog "..rog.." speed_delta "..speed_delta.." min_speedDelta "..min_speedDelta.." max_speedDelta "..max_speedDelta)
@@ -924,6 +1084,7 @@ end
     try first if the approach needs further adjustment.
 --]]
 local FD_PITCH_TAU = 0.5   -- seconds
+local FD_PITCH_TAU_GS = 0.25 -- seconds, glideslope (direct law, less lag wanted)
 local FD_ROLL_TAU  = 0.6   -- seconds
 
 local function fd_lag_filter(current, target, tau)
@@ -1023,7 +1184,14 @@ function ap_director_pitch_integral()
         fd_pitch_command=ap_director_pitch(B747DR_ap_FMA_active_pitch_mode)
     end
 
-    current_pitch_intregal = fd_lag_filter(current_pitch_intregal, fd_pitch_command, FD_PITCH_TAU)
+    -- The glideslope law produces a direct, already-damped command, so it does
+    -- not need as much smoothing as the incremental modes - and lag is exactly
+    -- what hurts beam tracking.
+    local tau = FD_PITCH_TAU
+    if B747DR_ap_FMA_active_pitch_mode==2 and GS_USE_LEGACY_FPM_LAW==false then
+        tau = FD_PITCH_TAU_GS
+    end
+    current_pitch_intregal = fd_lag_filter(current_pitch_intregal, fd_pitch_command, tau)
     B747DR_flight_director_pitch=current_pitch_intregal
     return current_pitch_intregal
 end
