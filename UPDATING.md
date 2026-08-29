@@ -131,5 +131,6 @@ look; Lua errors from the mod appear there with the script name.
 | `v1.0.0` | First pass: FD command filters, LOC capture freeze, localiser bearing wraparound, per-frame GC, security fixes |
 | `v1.1.0` | Vertical axis: pitch PID integral/derivative, glideslope beam gain programming, integrator corruption, inverted elevator rate limit. LNAV: DIRECT TO, route-edit re-anchoring, forward-only sequencing, signed cross-track, manual ILS course |
 | `v1.2.0` | VNAV SPD/FLCH pitch now tracks the FMS speed target; SPEEDBRAKE AXIS NORM/REV option on MAINT > SIM CONFIG p2 |
+| `v1.3.0` | Glideslope pitch law rewritten as a flight-path-angle controller; inverted conditions fixed in the V/S branch |
 
 See `CHANGELOG-DJMod.md` for the detail on each.

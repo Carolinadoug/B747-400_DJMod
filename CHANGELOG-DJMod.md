@@ -16,6 +16,85 @@ To update an existing install without re-downloading 2.6 GB, see
 
 ---
 
+## v1.3.0 — glideslope pitch law rewritten
+
+Still hunting with large deviations after three rounds of tuning, so this stops
+patching the existing law and changes its structure.
+
+### Why the old law could not be tuned straight
+
+`getGlideSlopeFPM()` commanded a **vertical speed** proportional to beam
+deviation. Deviation is in dots, which is an **angle**, and the vertical speed
+needed merely to *hold* a given angular deviation shrinks in proportion to
+range. So the correct fpm-per-dot gain changes continuously all the way down
+the approach. The beam-gain scheduling added in v1.1.0 only approximates that,
+and the residual is what was still showing up as hunting.
+
+Commanding a **flight path angle** is scale invariant. With vertical offset *h*
+at range *R* the angular deviation is θ = h/R; since dR/dt = −V, holding θ
+constant already requires a path-angle change of θ, and closing it requires
+proportionally more. The required correction is therefore proportional to
+**dots at every range**, with no range term at all — which is why this form
+needs no beam gain programming and behaves the same at 10 NM as at 300 ft.
+
+### The new law
+
+```
+θ = γ + α
+θ_cmd = θ_actual + K · (γ_cmd − γ_actual)
+```
+
+Holding angle of attack constant, the pitch that achieves the commanded path is
+the current pitch plus the flight-path error. It is self-trimming: α is
+measured implicitly rather than integrated, so there is no integrator to wind
+up or to corrupt across a mode change, and it settles cleanly — at steady state
+γ_actual = γ_cmd, so θ_cmd = θ_actual and the loop stops moving.
+
+This also collapses a three-stage cascade (dots → target fpm → incremental
+pitch nudge → elevator) into one stage, removing two of the three integrators
+from the glideslope path. G/S no longer shares the generic vertical-speed
+branch, and gets a shorter smoothing time constant (0.25 s vs 0.5 s) and a 10 Hz
+sample rate — both safe now the command is a direct computation rather than an
+incremental nudge.
+
+Speed is held by the autothrottle in SPD mode whenever pitch mode is G/S, so
+pitching for path is the correct division of labour.
+
+### Gains
+
+Chosen from an offline sweep of the closed loop (point-mass approach with a
+first-order pitch response). **P = 2.0 deg/dot, D = 3.0 deg per dot/s**:
+converges to the centreline by 2 NM from a 1 dot intercept with zero overshoot,
+and stays well behaved with the airframe response anywhere from 1 to 4 seconds,
+from ±2 dots, and with 0.08 dot of beam noise. D is insurance rather than
+load-bearing — the loop is stable at D = 0 and at D = 6.
+
+### A/B testing this in the sim
+
+Set `GS_USE_LEGACY_FPM_LAW = true` near the top of the glideslope block in
+`B747.19.xt.hydraulics_override.lua` to switch back to the old vertical-speed
+law without a rebuild, so the two can be compared on the same approach.
+
+For a trace of what the law is doing, set the dataref
+`laminar/B747/debug/flight_directors` to 1 (DataRefEditor or DataRefTool). The
+G/S line reports dots, deviation rate, commanded and actual flight path angle,
+current pitch and the resulting command, once per sample.
+
+### Also fixed: two inverted conditions in the shared vertical-speed branch
+
+```
+currentFPM < targetFPM and speed_delta < -max_speedDelta  ->  pitch DOWN
+currentFPM > targetFPM and speed_delta >  max_speedDelta  ->  pitch UP
+```
+
+Both read *"already diverging from the target, so move further from it"* —
+positive feedback that fired precisely during an excursion. This branch still
+serves V/S and VNAV PATH, so the fix matters even though G/S no longer uses it.
+The pitch-up test also compared raw `simDR_vvi_fpm_pilot` while its partner
+used `currentFPM`, so the two halves of one comparison used different values.
+
+---
+
 ## v1.2.0 — VNAV speed tracking and speedbrake axis option
 
 ### VNAV SPD / FLCH now pitches for the FMS speed target
