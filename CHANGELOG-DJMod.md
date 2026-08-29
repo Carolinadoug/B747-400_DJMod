@@ -16,6 +16,59 @@ To update an existing install without re-downloading 2.6 GB, see
 
 ---
 
+## v1.4.0 — VNAV descent path/speed conflict
+
+Reported: below 10,000 ft the aircraft ends up well above the vertical target
+and does not hold the selected speed, hunting throughout. The profile itself
+computes correctly — the aircraft does not follow it.
+
+### Root cause
+
+`deceleratedDesent()` returned a flat **−500 fpm** whenever indicated airspeed
+was more than 5 kt above the applicable restriction, and the profile rate
+otherwise. Two separate failures came out of that.
+
+**1. −500 was not only a vertical speed, it was a mode signal.**
+`fma_PitchModes()` tested
+
+```lua
+B747DR_ap_flightPhase == 3 and simDR_autopilot_vs_fpm == -500
+```
+
+to choose between VNAV SPD (pitch mode 4) and VNAV PATH (pitch mode 6) — and
+those route to two *completely different pitch laws*, speed-on-pitch versus the
+vertical-speed integrator. So a 5 kt threshold with no hysteresis was switching
+the entire vertical control law back and forth, each switch also firing the
+0.7 s command freeze in `ap_director_pitch_retVal()`. An offline replay of the
+old logic over a 7 minute descent produces **218 mode changes**.
+
+**2. It coupled "high" and "fast" into positive feedback.**
+−500 fpm is far shallower than a descent profile needs, so every excursion into
+speed priority pushed the aircraft further above path. Being above path then
+demands a steeper descent to recover, which makes it faster, which re-triggers
+speed priority. That is the reported symptom exactly. The same replay drifts
+**1434 ft** above profile.
+
+### Fix
+
+- Vertical speed is a smooth blend from the profile rate to the deceleration
+  rate as speed excess grows, instead of a step.
+- Willingness to shallow out for speed is scaled down by how far above profile
+  the aircraft already is, so the loop cannot run away. At `DES_PATH_TOL`
+  (400 ft) above profile the path wins outright.
+- The FMA mode signal is an explicit hysteretic flag,
+  `B747_descentSpeedPriority`, rather than exact equality on a float.
+- The profile catch-up term is applied on every return path.
+- Nil guards on the four FMC descent entries — a nil reaching `math.max()` here
+  would throw inside `after_physics` every frame.
+
+Same replay with the new logic: **1 mode change, 260 ft worst deviation**.
+
+*Tuning:* `DES_DECEL_VS`, `DES_SPD_ENTER`, `DES_SPD_EXIT`, `DES_PATH_TOL` at the
+top of `B747.70.xt.autopilot.vnav.lua`.
+
+---
+
 ## v1.3.0 — glideslope pitch law rewritten
 
 Still hunting with large deviations after three rounds of tuning, so this stops
@@ -338,6 +391,22 @@ they need in-sim validation first or because they are larger pieces of work.
   armed, treating an overshoot as signal loss. Should key off
   `nav1_display_horizontal` instead. The fixes above should stop the
   oscillation that triggers it, but the logic itself is unchanged.
+
+**VNAV**
+
+- **The descent profile has no deceleration segment.** The computed path is a
+  straight line to the next constraint and budgets nothing for slowing down, so
+  where a speed restriction requires deceleration the path is too steep to
+  allow it and drag is needed. v1.4.0 makes the aircraft hold the path and let
+  speed build — the existing DRAG REQUIRED annunciation covers that, and it is
+  what the real aircraft does — rather than sacrificing the path indefinitely.
+  Widening the deceleration anticipation was tried and rejected: it only buys
+  deceleration by flying shallower than the profile, i.e. by drifting above the
+  path. The real fix is a decel segment in the profile construction, so the
+  path is genuinely shallower where speed has to come off.
+- **DRAG REQUIRED only annunciates while accelerating.** The test in
+  `B747_ap_EICAS_msg()` includes `IAS > last_airspeed`, so once stabilised fast
+  the message stops even though drag is still needed.
 
 **FMS / LNAV**
 
