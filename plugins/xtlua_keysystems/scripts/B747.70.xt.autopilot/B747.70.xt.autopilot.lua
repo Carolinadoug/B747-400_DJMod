@@ -2958,7 +2958,15 @@ function fma_PitchModes()
 		end
 	elseif (simDR_autopilot_fms_vnav == 1 or B747DR_ap_vnav_state >= 2) and simDR_autopilot_vs_status == 2 then
 		-- (V/S) --
-		if B747DR_ap_flightPhase == 3 and simDR_autopilot_vs_fpm == -500 then
+		-- This used to test simDR_autopilot_vs_fpm == -500, i.e. it inferred the
+		-- mode from an exact-equality comparison on the commanded vertical
+		-- speed, which deceleratedDesent() set to exactly -500 whenever speed
+		-- was 5kt over a restriction. A 5kt threshold with no hysteresis was
+		-- therefore switching the whole vertical control law between
+		-- speed-on-pitch and the vertical-speed integrator, and firing the 0.7s
+		-- command freeze on every switch. The descent logic now publishes an
+		-- explicit, hysteretic flag instead.
+		if B747DR_ap_flightPhase == 3 and B747_descentSpeedPriority == 1 then
 			B747DR_ap_FMA_active_pitch_mode = 4 -- (VNAV SPD) --
 		else
 			B747DR_ap_FMA_active_pitch_mode = 6 -- (VNAV PATH) --
