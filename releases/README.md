@@ -15,6 +15,7 @@ the only way to get it from the web UI.
 | [v1.0.0 → v1.1.0](B747-400_DJMod_v1.0.0_to_v1.1.0_update.zip) | 79 KB | 10 |
 | [v1.1.0 → v1.2.0](B747-400_DJMod_v1.1.0_to_v1.2.0_update.zip) | 60 KB | 10 |
 | [v1.2.0 → v1.3.0](B747-400_DJMod_v1.2.0_to_v1.3.0_update.zip) | 28 KB | 3 |
+| [v1.3.0 → v1.4.0](B747-400_DJMod_v1.3.0_to_v1.4.0_update.zip) | 48 KB | 4 |
 
 ## Install
 
